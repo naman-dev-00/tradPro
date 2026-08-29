@@ -52,4 +52,5 @@ def test_isolated_temp_sqlite_database(tmp_path):
         test_engine = database.create_engine(temp_db_url)
         with test_engine.connect() as conn:
             pass
+        test_engine.dispose()
         assert temp_db_file.exists()

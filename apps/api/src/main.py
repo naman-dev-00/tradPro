@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.database import Base, engine, verify_database_connection
-from src.routes import health, strategies, indicators, rules, multi_series
+from src.routes import health, strategies, indicators, rules, multi_series, replays
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +34,7 @@ app.include_router(strategies.router)
 app.include_router(indicators.router)
 app.include_router(rules.rules_router)
 app.include_router(multi_series.router)
+app.include_router(replays.router)
 
 @app.get("/")
 def read_root():
