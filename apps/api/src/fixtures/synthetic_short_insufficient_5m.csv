@@ -1,0 +1,5 @@
+# Synthetic Educational Test Data - For Testing & Simulation Only
+timestamp,instrument_id,timeframe,open,high,low,close,volume,is_closed
+2026-08-28T09:15:00Z,SHORT_SERIES,5m,100.0,105.0,98.0,102.0,500.0,true
+2026-08-28T09:20:00Z,SHORT_SERIES,5m,102.0,108.0,100.0,106.0,700.0,true
+2026-08-28T09:25:00Z,SHORT_SERIES,5m,106.0,110.0,104.0,105.0,400.0,true

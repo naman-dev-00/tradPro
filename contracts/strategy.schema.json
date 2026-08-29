@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TradeProStrategy",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for the strategy"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the strategy"
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional description of the strategy"
+    },
+    "timeframe": {
+      "type": "string",
+      "enum": ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"],
+      "description": "Timeframe of the candles to evaluate"
+    },
+    "candidate_selection_mode": {
+      "type": "string",
+      "enum": ["FIRST_ELIGIBLE"],
+      "description": "Mode for picking eligible candidates"
+    },
+    "global_conditions": {
+      "$ref": "#/definitions/ConditionNode",
+      "description": "Conditions evaluated globally on index or reference symbol"
+    },
+    "candidate_conditions": {
+      "$ref": "#/definitions/ConditionNode",
+      "description": "Conditions evaluated on target candidate instruments"
+    },
+    "action": {
+      "$ref": "#/definitions/PaperTradeAction",
+      "description": "Action to perform when strategy conditions are satisfied"
+    }
+  },
+  "required": ["id", "name", "timeframe", "candidate_selection_mode", "action"],
+  "definitions": {
+    "ConditionNode": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["AND", "OR", "NOT", "CONDITION"],
+          "description": "Node type - logical group operator or leaf condition"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConditionNode"
+          },
+          "description": "Child conditions under an AND, OR, or NOT logical group"
+        },
+        "lhs": {
+          "$ref": "#/definitions/IndicatorExpression",
+          "description": "Left-hand side indicator expression for a CONDITION leaf node"
+        },
+        "operator": {
+          "type": "string",
+          "enum": ["GREATER_THAN", "LESS_THAN", "CROSSES_ABOVE", "CROSSES_BELOW", "TOUCHES", "BETWEEN"],
+          "description": "Comparison operator for the condition"
+        },
+        "rhs": {
+          "$ref": "#/definitions/ComparisonValue",
+          "description": "Right-hand side value or comparison target"
+        }
+      },
+      "required": ["type"]
+    },
+    "IndicatorExpression": {
+      "type": "object",
+      "properties": {
+        "indicator": {
+          "type": "string",
+          "enum": ["PRICE", "EMA", "RSI", "MACD", "PIVOT", "VOLUME"],
+          "description": "The type of technical indicator or price metric"
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Specific asset symbol, or placeholder e.g. CANDIDATE"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "period": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "source": {
+              "type": "string",
+              "enum": ["open", "high", "low", "close", "volume"]
+            },
+            "level": {
+              "type": "string",
+              "enum": ["P", "R1", "R2", "R3", "S1", "S2", "S3"]
+            }
+          },
+          "additionalProperties": false,
+          "description": "Parameters specific to the selected indicator"
+        }
+      },
+      "required": ["indicator"]
+    },
+    "ComparisonValue": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["NUMBER", "INDICATOR", "NUMBER_RANGE"],
+          "description": "The type of comparison target value"
+        },
+        "value": {
+          "type": "number",
+          "description": "The numerical value if type is NUMBER"
+        },
+        "range": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "A pair of [low, high] bounds if type is NUMBER_RANGE (e.g. for BETWEEN)"
+        },
+        "indicator": {
+          "$ref": "#/definitions/IndicatorExpression",
+          "description": "The comparison indicator if type is INDICATOR"
+        }
+      },
+      "required": ["type"]
+    },
+    "PaperTradeAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["PAPER_TRADE"],
+          "description": "Milestone 1 only supports PAPER_TRADE"
+        },
+        "risk_config": {
+          "$ref": "#/definitions/RiskConfiguration"
+        }
+      },
+      "required": ["type", "risk_config"]
+    },
+    "RiskConfiguration": {
+      "type": "object",
+      "properties": {
+        "max_position_size": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum size allocated for a simulated position"
+        },
+        "stop_loss_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Stop loss percentage (e.g. 2.5 for 2.5%)"
+        },
+        "take_profit_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Take profit percentage (e.g. 5.0 for 5%)"
+        },
+        "validity_window": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Simulated signal validity period in completed candles"
+        }
+      },
+      "required": ["max_position_size", "stop_loss_pct", "take_profit_pct", "validity_window"]
+    }
+  }
+}
