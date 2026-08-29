@@ -3,9 +3,11 @@ from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.engine.rule_models import EvaluationStatus, ConditionResult, GroupResult
 
-def ensure_utc_datetime(v: datetime) -> datetime:
+def ensure_utc_datetime(v: Union[datetime, str]) -> datetime:
     if v is None:
         return v
+    if isinstance(v, str):
+        v = datetime.fromisoformat(v.replace("Z", "+00:00"))
     if not isinstance(v, datetime):
         raise ValueError("Timestamp must be a datetime object.")
     if v.tzinfo is None or v.tzinfo.utcoffset(v) is None:

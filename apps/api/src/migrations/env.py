@@ -8,16 +8,22 @@ from src.database import Base, get_db_url
 from src.models import Strategy
 from src.config import settings
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
-config = context.config
+try:
+    config = context.config
+except AttributeError:
+    config = None
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+def configure_database_url(cfg):
+    configured_url = cfg.get_main_option("sqlalchemy.url")
+    if configured_url:
+        return configured_url
 
-config.set_main_option("sqlalchemy.url", get_db_url())
+    runtime_url = settings.DATABASE_URL or get_db_url()
+    cfg.set_main_option(
+        "sqlalchemy.url",
+        runtime_url.replace("%", "%%")
+    )
+    return runtime_url
 
 target_metadata = Base.metadata
 
@@ -64,8 +70,15 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
+    connectable.dispose()
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+if config is not None:
+    if config.config_file_name is not None:
+        fileConfig(config.config_file_name)
+
+    configure_database_url(config)
+
+    if context.is_offline_mode():
+        run_migrations_offline()
+    else:
+        run_migrations_online()

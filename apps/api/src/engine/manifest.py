@@ -1,9 +1,15 @@
 import os
+import hashlib
+import copy
 from enum import Enum
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, ConfigDict
 from src.engine.models import Candle
 from src.engine.csv_loader import load_candles_from_csv
+
+MANIFEST_VERSION = "1.0.0"
+CANDLE_SCHEMA_VERSION = "1.0.0"
+FIXED_GENERATED_AT = "2026-08-28T00:00:00Z"
 
 class DatasetCategory(str, Enum):
     REFERENCE = "REFERENCE"
@@ -21,6 +27,10 @@ class DatasetManifestEntry(BaseModel):
     completed_candle_count: int
     category: DatasetCategory
     is_synthetic: bool = True
+    manifest_version: str = MANIFEST_VERSION
+    dataset_checksum: str
+    candle_schema_version: str = CANDLE_SCHEMA_VERSION
+    generated_at: str = FIXED_GENERATED_AT
 
 FIXTURES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
@@ -81,10 +91,18 @@ MANIFEST_METADATA: List[Dict[str, Any]] = [
     },
 ]
 
-# Cache loaded candles and entries
+# Cache loaded candles, checksums and entries
 _MANIFEST_REGISTRY: Dict[str, DatasetManifestEntry] = {}
 _CANDLE_CACHE: Dict[str, List[Candle]] = {}
 _FILENAME_MAP: Dict[str, str] = {}
+_CHECKSUM_MAP: Dict[str, str] = {}
+
+def calculate_file_sha256(filepath: str) -> str:
+    hasher = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while chunk := f.read(8192):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 def _initialize_manifest_registry():
     seen_ids = set()
@@ -99,6 +117,7 @@ def _initialize_manifest_registry():
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Packaged fixture CSV file missing for dataset '{dataset_id}'")
 
+        checksum = calculate_file_sha256(filepath)
         candles = load_candles_from_csv(filepath)
         candle_count = len(candles)
         completed_candle_count = sum(1 for c in candles if c.is_closed)
@@ -113,24 +132,59 @@ def _initialize_manifest_registry():
             completed_candle_count=completed_candle_count,
             category=meta["category"],
             is_synthetic=True,
+            manifest_version=MANIFEST_VERSION,
+            dataset_checksum=checksum,
+            candle_schema_version=CANDLE_SCHEMA_VERSION,
+            generated_at=FIXED_GENERATED_AT,
         )
         _MANIFEST_REGISTRY[dataset_id] = entry
         _CANDLE_CACHE[dataset_id] = candles
         _FILENAME_MAP[dataset_id] = filename
+        _CHECKSUM_MAP[dataset_id] = checksum
 
 _initialize_manifest_registry()
 
 def get_dataset_manifest() -> List[DatasetManifestEntry]:
-    # Returns manifest entries in stable pre-defined order
     return [_MANIFEST_REGISTRY[meta["dataset_id"]] for meta in MANIFEST_METADATA]
 
 def get_dataset_entry(dataset_id: str) -> Optional[DatasetManifestEntry]:
     return _MANIFEST_REGISTRY.get(dataset_id)
 
-import copy
-
 def load_dataset_candles(dataset_id: str) -> List[Candle]:
     if dataset_id not in _CANDLE_CACHE:
         raise KeyError(f"Unknown synthetic dataset ID '{dataset_id}'")
-    # Return copies to prevent callers mutating cache
     return [copy.copy(c) for c in _CANDLE_CACHE[dataset_id]]
+
+def get_manifest_checksums_snapshot() -> Dict[str, str]:
+    return dict(_CHECKSUM_MAP)
+
+def compare_manifest_checksums(stored_snapshot: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    if not stored_snapshot:
+        return {
+            "is_exact_match": False,
+            "mismatches": {},
+            "warning": "No manifest checksum snapshot stored for this inspection run."
+        }
+
+    current = get_manifest_checksums_snapshot()
+    mismatches = {}
+    for ds_id, stored_hash in stored_snapshot.items():
+        curr_hash = current.get(ds_id)
+        if curr_hash != stored_hash:
+            mismatches[ds_id] = {
+                "stored_checksum": stored_hash,
+                "current_checksum": curr_hash or "MISSING"
+            }
+
+    if mismatches:
+        return {
+            "is_exact_match": False,
+            "mismatches": mismatches,
+            "warning": f"Reproducibility warning: {len(mismatches)} synthetic dataset fixture(s) have changed since this inspection run was created."
+        }
+
+    return {
+        "is_exact_match": True,
+        "mismatches": {},
+        "warning": None
+    }

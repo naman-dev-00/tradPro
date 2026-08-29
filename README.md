@@ -147,6 +147,19 @@ The **Multi-Series Lab** evaluates strategy rules independently across 1 to 20 p
 
 ---
 
+---
+
+## Historical Boolean Rule Replay Lab (`/historical-replay-lab`) & Inspection History (`/inspection-history`)
+
+The **Historical Replay Lab** and **Inspection History** provide persistent, audit-trailed, reproducible Boolean rule evaluation across historical synthetic candle timestamps:
+- **Persistent Database Models (`inspection_runs`)**: Alembic migration `0002_inspection_history` adds immutable inspection history storage compatible with SQLite and PostgreSQL.
+- **Dataset Reproducibility & Fixture Checksums**: Dynamically computes SHA-256 fixture checksums server-side, captures stored snapshots, and displays mismatch reproducibility warnings.
+- **Race-Safe Deduplication & Fingerprinting**: Generates SHA-256 request fingerprints to safely reuse completed identical runs without re-evaluation or race condition duplicates.
+- **Categorical Status Timelines & Exports**: Displays status timeline sequences, transition counts, consecutive run lengths, and neutral JSON / CSV exports (with formula injection escaping for cells starting with `=`, `+`, `-`, or `@`).
+- **Educational Safety & Boundaries**: Strict prohibition of trade simulation, profitability calculations, ranking, signals, recommendations, or broker connectivity. Local single-user educational architecture.
+
+---
+
 ## GitHub Actions CI Workflow
 
 Automated CI workflow runs on pull requests targeting `main`, pushes to `main`, and manual dispatch:

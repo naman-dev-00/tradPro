@@ -7,7 +7,30 @@ from src.config import settings
 logger = logging.getLogger("tradepro.database")
 logging.basicConfig(level=logging.INFO)
 
+from datetime import datetime, timezone
+from sqlalchemy.types import TypeDecorator, DateTime
+
 Base = declarative_base()
+
+class UTCDateTime(TypeDecorator):
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if not isinstance(value, datetime):
+            raise ValueError("Timestamp must be a datetime object.")
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError("Naive timestamps are forbidden. Timestamps must be timezone-aware.")
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 def mask_db_url(url_str: str) -> str:
     try:

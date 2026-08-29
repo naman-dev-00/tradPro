@@ -309,3 +309,144 @@ export async function evaluateMultiSeries(req: MultiSeriesEvaluationRequest): Pr
   }
   return res.json();
 }
+
+export interface ReplayPoint {
+  evaluation_timestamp: string;
+  reference_timestamp_used?: string | null;
+  results: SeriesEvaluationResult[];
+  status_counts: Record<string, number>;
+  warnings: string[];
+}
+
+export interface SubjectStatusTimeline {
+  dataset_id: string;
+  points: { timestamp: string; status: string; inspection_summary?: string }[];
+  transition_counts: Record<string, number>;
+  consecutive_status_runs: Record<string, number>;
+  first_available_timestamp?: string | null;
+  unavailable_point_count: number;
+  invalid_point_count: number;
+}
+
+export interface HistoricalReplayResult {
+  run_id?: string | null;
+  strategy_id?: string | null;
+  start_timestamp: string;
+  end_timestamp: string;
+  sampling_step: number;
+  sampled_timestamp_count: number;
+  total_evaluations: number;
+  reference_dataset_id: string;
+  reference_metadata: Record<string, any>;
+  subject_dataset_ids: string[];
+  subject_metadata: Record<string, any>[];
+  replay_points: ReplayPoint[];
+  subject_timelines: SubjectStatusTimeline[];
+  aggregate_status_counts: Record<string, number>;
+  reproducibility: {
+    is_exact_match: boolean;
+    mismatches?: Record<string, any>;
+    warning?: string | null;
+  };
+  warnings: string[];
+}
+
+export interface HistoricalReplayRequest {
+  strategy_payload?: any;
+  strategy_id?: string;
+  reference_dataset_id: string;
+  subject_dataset_ids: string[];
+  start_timestamp: string;
+  end_timestamp: string;
+  sampling_step: number;
+}
+
+export interface InspectionRunSummaryResponse {
+  id: string;
+  strategy_id?: string | null;
+  strategy_name?: string | null;
+  run_type: string;
+  reference_dataset_id?: string | null;
+  subject_dataset_ids: string[];
+  requested_start_timestamp?: string | null;
+  requested_end_timestamp?: string | null;
+  timeframe: string;
+  engine_version: string;
+  manifest_version: string;
+  created_at: string;
+  completed_at?: string | null;
+  status: string;
+  failure_summary?: string | null;
+  result_summary?: string | null;
+  synthetic_data_confirmed: boolean;
+  is_exact_match: boolean;
+}
+
+export interface PaginatedInspectionRunList {
+  items: InspectionRunSummaryResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function createHistoricalReplay(req: HistoricalReplayRequest): Promise<{ run_id: string; status: string; is_reused: boolean; run: any }> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/replays`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json();
+    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    throw new Error(message || "Historical replay creation failed");
+  }
+  return res.json();
+}
+
+export async function listInspectionRuns(params: {
+  page?: number;
+  page_size?: number;
+  strategy_id?: string;
+  status?: string;
+  run_type?: string;
+  start_date?: string;
+  end_date?: string;
+} = {}): Promise<PaginatedInspectionRunList> {
+  const query = new URLSearchParams();
+  if (params.page) query.set("page", params.page.toString());
+  if (params.page_size) query.set("page_size", params.page_size.toString());
+  if (params.strategy_id) query.set("strategy_id", params.strategy_id);
+  if (params.status) query.set("status", params.status);
+  if (params.run_type) query.set("run_type", params.run_type);
+  if (params.start_date) query.set("start_date", params.start_date);
+  if (params.end_date) query.set("end_date", params.end_date);
+
+  const res = await fetch(`${API_BASE_URL}/api/v1/replays?${query.toString()}`);
+  if (!res.ok) throw new Error("Failed to fetch inspection runs list");
+  return res.json();
+}
+
+export async function getInspectionRunDetail(runId: string): Promise<any> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/replays/${runId}`);
+  if (!res.ok) {
+    const errData = await res.json();
+    throw new Error(errData.detail || `Failed to fetch run '${runId}'`);
+  }
+  return res.json();
+}
+
+export async function getInspectionRunReproducibility(runId: string): Promise<any> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/replays/${runId}/reproducibility`);
+  if (!res.ok) throw new Error("Failed to fetch reproducibility status");
+  return res.json();
+}
+
+export function getExportJsonUrl(runId: string): string {
+  return `${API_BASE_URL}/api/v1/replays/${runId}/export.json`;
+}
+
+export function getExportCsvUrl(runId: string): string {
+  return `${API_BASE_URL}/api/v1/replays/${runId}/export.csv`;
+}
