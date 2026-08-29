@@ -103,6 +103,10 @@ from src.engine.csv_loader import load_candles_from_csv
 
 FIXTURES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
+def load_dataset_from_fixture(filename: str) -> List[Candle]:
+    filepath = os.path.join(FIXTURES_DIR, filename)
+    return load_candles_from_csv(filepath)
+
 PACKAGED_DATASETS = {
     "synthetic_underlying_nifty_15m": {
         "id": "synthetic_underlying_nifty_15m",

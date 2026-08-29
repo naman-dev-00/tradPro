@@ -59,6 +59,7 @@ export default function Dashboard() {
             <Link href="/" className="text-white bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">Strategies</Link>
             <Link href="/builder" className="hover:text-white transition px-3 py-1.5">Builder</Link>
             <Link href="/indicator-lab" className="hover:text-indigo-300 text-indigo-400 font-bold transition px-3 py-1.5">Indicator Lab</Link>
+            <Link href="/rule-lab" className="hover:text-purple-300 text-purple-400 font-bold transition px-3 py-1.5">Rule Lab</Link>
           </nav>
         </div>
       </header>

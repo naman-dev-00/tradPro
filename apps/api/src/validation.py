@@ -2,7 +2,17 @@ from typing import List, Optional
 from src.schemas import StrategyBase, ConditionNode, IndicatorExpression, ComparisonValue
 
 VALID_INDICATORS = {"PRICE", "EMA", "RSI", "MACD", "PIVOT", "VOLUME"}
-VALID_OPERATORS = {"GREATER_THAN", "LESS_THAN", "CROSSES_ABOVE", "CROSSES_BELOW", "TOUCHES", "BETWEEN"}
+VALID_OPERATORS = {
+    "GREATER_THAN",
+    "LESS_THAN",
+    "GREATER_THAN_OR_EQUAL",
+    "LESS_THAN_OR_EQUAL",
+    "EQUALS",
+    "CROSSES_ABOVE",
+    "CROSSES_BELOW",
+    "TOUCHES",
+    "BETWEEN",
+}
 VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"}
 
 def validate_indicator(expr: Optional[IndicatorExpression], path: str, is_candidate: bool) -> List[str]:

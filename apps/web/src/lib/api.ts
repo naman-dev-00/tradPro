@@ -173,3 +173,68 @@ export async function calculateIndicator(req: CalculateIndicatorRequest): Promis
   }
   return res.json();
 }
+
+export type EvaluationStatus = "TRUE" | "FALSE" | "UNAVAILABLE" | "INVALID";
+
+export interface ConditionResult {
+  condition_id: string;
+  status: EvaluationStatus;
+  timestamp?: string;
+  left_value?: any;
+  operator: string;
+  right_value?: any;
+  reason?: string;
+  indicator_values_used?: Record<string, any>;
+  warmup_info?: Record<string, any>;
+}
+
+export interface GroupResult {
+  group_id: string;
+  logical_operator: string;
+  status: EvaluationStatus;
+  child_results: (GroupResult | ConditionResult)[];
+  reason?: string;
+}
+
+export interface RuleEvaluationResult {
+  strategy_id?: string;
+  evaluated_at: string;
+  reference_timestamp?: string;
+  subject_timestamp?: string;
+  reference_series_result?: GroupResult | ConditionResult;
+  subject_series_result?: GroupResult | ConditionResult;
+  overall_status: EvaluationStatus;
+  passed_condition_ids: string[];
+  failed_condition_ids: string[];
+  unavailable_condition_ids: string[];
+  invalid_condition_ids: string[];
+}
+
+export interface RuleEvaluationRequest {
+  strategy_id?: string;
+  strategy?: any;
+  reference_dataset_id?: string;
+  subject_dataset_id?: string;
+  eval_timestamp?: string;
+}
+
+export async function evaluateRules(req: RuleEvaluationRequest): Promise<RuleEvaluationResult> {
+  const res = await fetch(`${API_BASE_URL}/rules/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json();
+    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    throw new Error(message || "Failed to evaluate rules");
+  }
+  return res.json();
+}
+
+export async function getSupportedOperators(): Promise<{ operators: any[] }> {
+  const res = await fetch(`${API_BASE_URL}/rules/operators`);
+  if (!res.ok) throw new Error("Failed to fetch supported operators list");
+  return res.json();
+}

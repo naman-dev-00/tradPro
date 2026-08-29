@@ -39,12 +39,17 @@ export function graphToStrategy(nodes: Node[], edges: Edge[]): any {
     if (!node) return null;
 
     if (node.type === "condition") {
-      return {
+      const cond: any = {
         type: "CONDITION",
+        id: node.id,
         lhs: node.data.lhs || { indicator: "PRICE", symbol: "CANDIDATE" },
         operator: node.data.operator || "GREATER_THAN",
         rhs: node.data.rhs || { type: "NUMBER", value: 0 },
       };
+      if (node.data.tolerance !== undefined && node.data.tolerance !== null) {
+        cond.tolerance = Number(node.data.tolerance);
+      }
+      return cond;
     }
 
     if (node.type === "logicalGroup") {
@@ -147,6 +152,7 @@ export function strategyToGraph(strategy: any): { nodes: Node[]; edges: Edge[] }
           lhs: conditionNode.lhs,
           operator: conditionNode.operator,
           rhs: conditionNode.rhs,
+          tolerance: conditionNode.tolerance,
         },
       });
 
