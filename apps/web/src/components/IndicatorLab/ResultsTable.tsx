@@ -10,7 +10,7 @@ interface ResultsTableProps {
   params: Record<string, any>;
 }
 
-export function ResultsTable({ results, indicatorName, params }: ResultsTableProps) {
+export function ResultsTable({ results, indicatorName }: ResultsTableProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { PlusCircle, HelpCircle } from "lucide-react";
+import { HelpCircle } from "lucide-react";
 
 export function Sidebar() {
   const onDragStart = (event: React.DragEvent, nodeType: string) => {

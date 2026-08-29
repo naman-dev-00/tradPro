@@ -173,7 +173,7 @@ export function StrategyBuilder({ initialStrategy, onSaveSuccess }: StrategyBuil
     try {
       setSaveStatus({ type: null, msg: "" });
       const isUpdate = !!initialStrategy;
-      const res = await saveStrategy(strategyJson, isUpdate);
+      await saveStrategy(strategyJson, isUpdate);
       setSaveStatus({ type: "success", msg: "Strategy saved successfully!" });
       if (onSaveSuccess) {
         setTimeout(onSaveSuccess, 1500);

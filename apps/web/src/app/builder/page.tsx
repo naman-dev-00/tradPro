@@ -75,11 +75,14 @@ function BuilderContent() {
           <span className="text-xs text-slate-500 font-medium">Dashboard / Strategy Builder Workspace</span>
         </div>
         <div className="flex items-center gap-3 text-xs font-semibold">
-          <Link href="/indicator-lab" className="text-indigo-400 hover:text-indigo-300 font-bold transition">
-            Open Indicator Lab →
+          <Link href="/indicator-lab" className="text-slate-400 hover:text-white transition">
+            Indicator Lab
           </Link>
-          <Link href="/rule-lab" className="text-purple-400 hover:text-purple-300 font-bold transition">
-            Open Rule Lab →
+          <Link href="/rule-lab" className="text-slate-400 hover:text-white transition">
+            Rule Lab
+          </Link>
+          <Link href="/multi-series-lab" className="text-sky-400 hover:text-sky-300 font-bold transition">
+            Multi-Series Lab →
           </Link>
         </div>
       </div>

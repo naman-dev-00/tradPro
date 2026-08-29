@@ -35,8 +35,11 @@ export default function IndicatorLabPage() {
               <FlaskConical size={14} className="text-indigo-400" />
               Indicator Lab
             </Link>
-            <Link href="/rule-lab" className="hover:text-purple-300 text-purple-400 font-bold transition px-3 py-1.5">
+            <Link href="/rule-lab" className="hover:text-white transition px-3 py-1.5">
               Rule Lab
+            </Link>
+            <Link href="/multi-series-lab" className="hover:text-white transition px-3 py-1.5">
+              Multi-Series Lab
             </Link>
           </nav>
         </div>

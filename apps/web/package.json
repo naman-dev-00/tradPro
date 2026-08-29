@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run --pool=threads"
+    "test": "vitest run"
   },
   "dependencies": {
     "lightweight-charts": "^5.2.1",

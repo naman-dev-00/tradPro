@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { getStrategies, StrategyResponse } from "../lib/api";
-import { Plus, Sliders, PlayCircle, Layers, Settings, FileJson, Clock, AlertTriangle } from "lucide-react";
+import { Plus, Sliders, Clock, AlertTriangle } from "lucide-react";
 
 export default function Dashboard() {
   const [strategies, setStrategies] = useState<StrategyResponse[]>([]);
@@ -16,7 +16,7 @@ export default function Dashboard() {
         setStrategies(data);
         setLoading(false);
       })
-      .catch((err) => {
+      .catch(() => {
         setError("Could not connect to TradePro API. Make sure the backend server is running.");
         setLoading(false);
       });
@@ -58,8 +58,9 @@ export default function Dashboard() {
           <nav className="flex items-center gap-4 text-xs font-semibold text-slate-300">
             <Link href="/" className="text-white bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">Strategies</Link>
             <Link href="/builder" className="hover:text-white transition px-3 py-1.5">Builder</Link>
-            <Link href="/indicator-lab" className="hover:text-indigo-300 text-indigo-400 font-bold transition px-3 py-1.5">Indicator Lab</Link>
-            <Link href="/rule-lab" className="hover:text-purple-300 text-purple-400 font-bold transition px-3 py-1.5">Rule Lab</Link>
+            <Link href="/indicator-lab" className="hover:text-white transition px-3 py-1.5">Indicator Lab</Link>
+            <Link href="/rule-lab" className="hover:text-white transition px-3 py-1.5">Rule Lab</Link>
+            <Link href="/multi-series-lab" className="hover:text-white transition px-3 py-1.5">Multi-Series Lab</Link>
           </nav>
         </div>
       </header>

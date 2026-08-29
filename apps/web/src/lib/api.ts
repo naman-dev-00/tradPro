@@ -64,6 +64,7 @@ export interface IndicatorResultOutput {
   timestamp: string;
   indicator: string;
   value: number | Record<string, number | null> | null;
+  raw_value?: any;
   available: boolean;
   warmup_remaining: number;
 }
@@ -236,5 +237,75 @@ export async function evaluateRules(req: RuleEvaluationRequest): Promise<RuleEva
 export async function getSupportedOperators(): Promise<{ operators: any[] }> {
   const res = await fetch(`${API_BASE_URL}/rules/operators`);
   if (!res.ok) throw new Error("Failed to fetch supported operators list");
+  return res.json();
+}
+
+export type DatasetCategory = "REFERENCE" | "SUBJECT";
+
+export interface DatasetManifestEntry {
+  dataset_id: string;
+  display_name: string;
+  description: string;
+  instrument_id: string;
+  timeframe: string;
+  candle_count: number;
+  completed_candle_count: number;
+  category: DatasetCategory;
+  is_synthetic: boolean;
+}
+
+export interface SeriesEvaluationResult {
+  dataset_id: string;
+  instrument_id: string;
+  timeframe: string;
+  evaluation_timestamp: string;
+  candle_timestamp_used?: string | null;
+  overall_status: EvaluationStatus;
+  reference_result?: GroupResult | ConditionResult | null;
+  subject_result?: GroupResult | ConditionResult | null;
+  passed_condition_ids: string[];
+  failed_condition_ids: string[];
+  unavailable_condition_ids: string[];
+  invalid_condition_ids: string[];
+  inspection_summary: string;
+}
+
+export interface MultiSeriesEvaluationResult {
+  strategy_id?: string | null;
+  requested_evaluation_timestamp: string;
+  reference_dataset_id: string;
+  reference_timestamp_used?: string | null;
+  results: SeriesEvaluationResult[];
+  status_counts: Record<string, number>;
+  total_series_evaluated: number;
+  warnings: string[];
+}
+
+export interface MultiSeriesEvaluationRequest {
+  strategy_id?: string;
+  strategy?: any;
+  reference_dataset_id: string;
+  subject_dataset_ids: string[];
+  eval_timestamp: string;
+}
+
+export async function getDatasetManifest(): Promise<DatasetManifestEntry[]> {
+  const res = await fetch(`${API_BASE_URL}/multi-series/datasets`);
+  if (!res.ok) throw new Error("Failed to fetch dataset manifest");
+  return res.json();
+}
+
+export async function evaluateMultiSeries(req: MultiSeriesEvaluationRequest): Promise<MultiSeriesEvaluationResult> {
+  const res = await fetch(`${API_BASE_URL}/multi-series/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json();
+    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    throw new Error(message || "Failed to evaluate multi-series rules");
+  }
   return res.json();
 }
