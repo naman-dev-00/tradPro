@@ -3,7 +3,6 @@ import {
   CalculateIndicatorResponse,
   SupportedIndicatorMetadata,
   DatasetMetadata,
-  DatasetDetailResponse,
 } from "../src/lib/api";
 
 describe("Milestone 2A-UI Required Frontend Behaviors", () => {

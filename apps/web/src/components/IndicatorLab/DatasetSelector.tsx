@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { DatasetMetadata, DatasetDetailResponse } from "../../lib/api";
-import { Database, Clock, Eye, X, Filter } from "lucide-react";
+import { Database, Clock, Eye, X } from "lucide-react";
 
 interface DatasetSelectorProps {
   datasets: DatasetMetadata[];

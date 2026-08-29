@@ -137,6 +137,16 @@ The **Rule Inspection Lab** provides deterministic Boolean rule evaluation of op
 
 ---
 
+## Educational Multi-Series Rule Inspection Lab (`/multi-series-lab`)
+
+The **Multi-Series Lab** evaluates strategy rules independently across 1 to 20 packaged synthetic subject datasets:
+- **Safe Synthetic Manifest (`GET /multi-series/datasets`)**: Server-side whitelisted manifest categorizing datasets into `REFERENCE` (Underlying Index) and `SUBJECT` (Option Candidates).
+- **Independent Inspection (`POST /multi-series/evaluate`)**: Evaluates rules across selected subject datasets in deterministic input order without ranking, picking winners, or recommending actions.
+- **Status Count Invariants**: Summary cards displaying `TRUE`, `FALSE`, `UNAVAILABLE`, `INVALID`, and Total Evaluated counts.
+- **Accessibility & Mobile Layout**: Keyboard-accessible multi-select, visible focus rings, text+icon status badges, screen-reader live announcements (`role="status"`), and 375px mobile responsive layout.
+
+---
+
 ## GitHub Actions CI Workflow
 
 Automated CI workflow runs on pull requests targeting `main`, pushes to `main`, and manual dispatch:

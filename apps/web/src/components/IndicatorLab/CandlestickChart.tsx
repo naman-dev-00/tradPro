@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useMemo } from "react";
 import {
   createChart,
   ColorType,
@@ -17,12 +17,12 @@ export interface ComparisonConfig {
   indicator: string;
   params: Record<string, any>;
   results: IndicatorResultOutput[];
-  color: string;
+  color?: string;
 }
 
 interface CandlestickChartProps {
   candles: CandleData[];
-  primaryIndicator: {
+  primaryIndicator?: {
     indicator: string;
     params: Record<string, any>;
     results: IndicatorResultOutput[];
@@ -30,13 +30,13 @@ interface CandlestickChartProps {
   comparisons?: ComparisonConfig[];
 }
 
-const COLOR_PALETTE = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6"];
+const COLOR_PALETTE = ["#ec4899", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4"];
 
-export function CandlestickChart({
+export const CandlestickChart: React.FC<CandlestickChartProps> = ({
   candles,
   primaryIndicator,
   comparisons = [],
-}: CandlestickChartProps) {
+}) => {
   const mainChartContainerRef = useRef<HTMLDivElement>(null);
   const rsiChartContainerRef = useRef<HTMLDivElement>(null);
   const macdChartContainerRef = useRef<HTMLDivElement>(null);
@@ -48,22 +48,25 @@ export function CandlestickChart({
   const volChartRef = useRef<IChartApi | null>(null);
 
   // Combine primary + comparisons into a single list
-  const activeSeriesConfigs: ComparisonConfig[] = [];
-  if (primaryIndicator && primaryIndicator.results.length > 0) {
-    activeSeriesConfigs.push({
-      id: "primary",
-      indicator: primaryIndicator.indicator,
-      params: primaryIndicator.params,
-      results: primaryIndicator.results,
-      color: "#6366f1",
+  const activeSeriesConfigs = useMemo(() => {
+    const configs: ComparisonConfig[] = [];
+    if (primaryIndicator && primaryIndicator.results.length > 0) {
+      configs.push({
+        id: "primary",
+        indicator: primaryIndicator.indicator,
+        params: primaryIndicator.params,
+        results: primaryIndicator.results,
+        color: "#6366f1",
+      });
+    }
+    comparisons.forEach((comp, idx) => {
+      configs.push({
+        ...comp,
+        color: comp.color || COLOR_PALETTE[(idx + 1) % COLOR_PALETTE.length],
+      });
     });
-  }
-  comparisons.forEach((comp, idx) => {
-    activeSeriesConfigs.push({
-      ...comp,
-      color: comp.color || COLOR_PALETTE[(idx + 1) % COLOR_PALETTE.length],
-    });
-  });
+    return configs;
+  }, [primaryIndicator, comparisons]);
 
   const hasRsi = activeSeriesConfigs.some((c) => c.indicator === "RSI");
   const hasMacd = activeSeriesConfigs.some((c) => c.indicator === "MACD");
@@ -78,97 +81,103 @@ export function CandlestickChart({
     if (macdChartRef.current) macdChartRef.current.remove();
     if (volChartRef.current) volChartRef.current.remove();
 
-    const chartOptions = {
+    // Responsive width helper
+    const getContainerWidth = () => mainChartContainerRef.current?.clientWidth || 800;
+
+    // 1. Create Main Price Chart
+    const mainChart = createChart(mainChartContainerRef.current, {
+      width: getContainerWidth(),
+      height: 380,
       layout: {
-        background: { type: ColorType.Solid, color: "#020617" },
+        background: { type: ColorType.Solid, color: "#090d16" },
         textColor: "#94a3b8",
       },
       grid: {
-        vertLines: { color: "#0f172a" },
-        horzLines: { color: "#0f172a" },
+        vertLines: { color: "#1e293b" },
+        horzLines: { color: "#1e293b" },
       },
       timeScale: {
+        borderColor: "#334155",
         timeVisible: true,
         secondsVisible: false,
-        borderColor: "#1e293b",
       },
-      crosshair: {
-        mode: 1,
-      },
-    };
-
-    // 1. Create Main Candlestick Chart
-    const mainChart = createChart(mainChartContainerRef.current, {
-      ...chartOptions,
-      height: 320,
     });
     mainChartRef.current = mainChart;
 
-    const candleSeries = mainChart.addSeries(CandlestickSeries, {
+    // Add Candlestick Series using v5 API
+    const candlestickSeries = mainChart.addSeries(CandlestickSeries, {
       upColor: "#10b981",
       downColor: "#ef4444",
-      borderUpColor: "#10b981",
-      borderDownColor: "#ef4444",
+      borderVisible: false,
       wickUpColor: "#10b981",
       wickDownColor: "#ef4444",
     });
 
-    const formattedCandles = candles.map((c) => ({
+    const candleData = candles.map((c) => ({
       time: (new Date(c.timestamp).getTime() / 1000) as Time,
       open: c.open,
       high: c.high,
       low: c.low,
       close: c.close,
     }));
-    candleSeries.setData(formattedCandles);
+    candlestickSeries.setData(candleData);
 
-    // Render Price Overlays (PRICE, SMA, EMA, PIVOT) on Main Chart
+    // Overlay Main-Chart Indicators (PRICE, SMA, EMA, PIVOT)
     activeSeriesConfigs.forEach((cfg) => {
-      const { indicator, results, color } = cfg;
+      const ind = cfg.indicator;
+      const color = cfg.color || "#6366f1";
 
-      if (["PRICE", "SMA", "EMA"].includes(indicator)) {
+      if (["PRICE", "SMA", "EMA"].includes(ind)) {
         const lineSeries = mainChart.addSeries(LineSeries, {
-          color,
+          color: color,
           lineWidth: 2,
-          title: `${indicator} ${cfg.params.period ? `(${cfg.params.period})` : ""}`,
+          title: `${ind}${cfg.params.period ? `(${cfg.params.period})` : ""}`,
         });
-        const dataPoints = results
-          .filter((r) => r.available && r.value !== null && typeof r.value === "number")
+
+        const lineData = cfg.results
+          .filter((r) => r.available && r.raw_value !== null)
           .map((r) => ({
             time: (new Date(r.timestamp).getTime() / 1000) as Time,
-            value: r.value as number,
+            value: r.raw_value as number,
           }));
-        lineSeries.setData(dataPoints);
-      } else if (indicator === "PIVOT") {
-        // PIVOT renders Pivot, S1, R1 lines
-        const pSeries = mainChart.addSeries(LineSeries, { color: "#8b5cf6", lineWidth: 1, title: "Pivot" });
-        const s1Series = mainChart.addSeries(LineSeries, { color: "#10b981", lineWidth: 1, title: "S1" });
-        const r1Series = mainChart.addSeries(LineSeries, { color: "#f43f5e", lineWidth: 1, title: "R1" });
 
-        const pData: any[] = [];
-        const s1Data: any[] = [];
-        const r1Data: any[] = [];
+        lineSeries.setData(lineData);
+      } else if (ind === "PIVOT") {
+        // PIVOT lines (P, S1, R1)
+        ["P", "S1", "R1"].forEach((levelKey, lIdx) => {
+          const pivotColors = [color, "#ef4444", "#10b981"];
+          const lineSeries = mainChart.addSeries(LineSeries, {
+            color: pivotColors[lIdx],
+            lineWidth: 1,
+            title: `PIVOT-${levelKey}`,
+          });
 
-        results.forEach((r) => {
-          if (r.available && r.value && typeof r.value === "object") {
-            const t = (new Date(r.timestamp).getTime() / 1000) as Time;
-            if (r.value.pivot != null) pData.push({ time: t, value: r.value.pivot });
-            if (r.value.s1 != null) s1Data.push({ time: t, value: r.value.s1 });
-            if (r.value.r1 != null) r1Data.push({ time: t, value: r.value.r1 });
-          }
+          const lineData = cfg.results
+            .filter((r) => r.available && r.raw_value && r.raw_value[levelKey] !== undefined)
+            .map((r) => ({
+              time: (new Date(r.timestamp).getTime() / 1000) as Time,
+              value: r.raw_value[levelKey] as number,
+            }));
+
+          lineSeries.setData(lineData);
         });
-
-        pSeries.setData(pData);
-        s1Series.setData(s1Data);
-        r1Series.setData(r1Data);
       }
     });
 
-    // 2. Create RSI Chart Panel
+    // 2. Create RSI Sub-Chart (if active)
     if (hasRsi && rsiChartContainerRef.current) {
       const rsiChart = createChart(rsiChartContainerRef.current, {
-        ...chartOptions,
+        width: getContainerWidth(),
         height: 160,
+        layout: {
+          background: { type: ColorType.Solid, color: "#090d16" },
+          textColor: "#94a3b8",
+        },
+        grid: {
+          vertLines: { color: "#1e293b" },
+          horzLines: { color: "#1e293b" },
+        },
+        timeScale: { borderColor: "#334155", timeVisible: true },
       });
       rsiChartRef.current = rsiChart;
 
@@ -176,110 +185,153 @@ export function CandlestickChart({
         .filter((c) => c.indicator === "RSI")
         .forEach((cfg) => {
           const rsiSeries = rsiChart.addSeries(LineSeries, {
-            color: cfg.color,
+            color: cfg.color || "#ec4899",
             lineWidth: 2,
-            title: `RSI (${cfg.params.period || 14})`,
+            title: `RSI(${cfg.params.period || 14})`,
           });
-          const points = cfg.results
-            .filter((r) => r.available && r.value !== null && typeof r.value === "number")
+
+          const rsiData = cfg.results
+            .filter((r) => r.available && r.raw_value !== null)
             .map((r) => ({
               time: (new Date(r.timestamp).getTime() / 1000) as Time,
-              value: r.value as number,
+              value: r.raw_value as number,
             }));
-          rsiSeries.setData(points);
+
+          rsiSeries.setData(rsiData);
         });
     }
 
-    // 3. Create MACD Chart Panel
+    // 3. Create MACD Sub-Chart (if active)
     if (hasMacd && macdChartContainerRef.current) {
       const macdChart = createChart(macdChartContainerRef.current, {
-        ...chartOptions,
+        width: getContainerWidth(),
         height: 180,
+        layout: {
+          background: { type: ColorType.Solid, color: "#090d16" },
+          textColor: "#94a3b8",
+        },
+        grid: {
+          vertLines: { color: "#1e293b" },
+          horzLines: { color: "#1e293b" },
+        },
+        timeScale: { borderColor: "#334155", timeVisible: true },
       });
       macdChartRef.current = macdChart;
 
       activeSeriesConfigs
         .filter((c) => c.indicator === "MACD")
         .forEach((cfg) => {
-          const macdLine = macdChart.addSeries(LineSeries, { color: cfg.color, lineWidth: 1, title: "MACD" });
-          const signalLine = macdChart.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 1, title: "Signal" });
-          const histSeries = macdChart.addSeries(HistogramSeries, { title: "Histogram" });
-
-          const macdData: any[] = [];
-          const sigData: any[] = [];
-          const histData: any[] = [];
-
-          cfg.results.forEach((r) => {
-            if (r.value && typeof r.value === "object") {
-              const t = (new Date(r.timestamp).getTime() / 1000) as Time;
-              if (r.value.macd != null) macdData.push({ time: t, value: r.value.macd });
-              if (r.value.signal != null) sigData.push({ time: t, value: r.value.signal });
-              if (r.value.histogram != null) {
-                histData.push({
-                  time: t,
-                  value: r.value.histogram,
-                  color: r.value.histogram >= 0 ? "#10b981" : "#ef4444",
-                });
-              }
-            }
+          // MACD Line
+          const macdLine = macdChart.addSeries(LineSeries, {
+            color: cfg.color || "#3b82f6",
+            lineWidth: 2,
+            title: "MACD Line",
           });
+          macdLine.setData(
+            cfg.results
+              .filter((r) => r.available && r.raw_value?.macd_line !== undefined)
+              .map((r) => ({
+                time: (new Date(r.timestamp).getTime() / 1000) as Time,
+                value: r.raw_value.macd_line as number,
+              }))
+          );
 
-          macdLine.setData(macdData);
-          signalLine.setData(sigData);
-          histSeries.setData(histData);
+          // Signal Line
+          const signalLine = macdChart.addSeries(LineSeries, {
+            color: "#f59e0b",
+            lineWidth: 1,
+            title: "Signal Line",
+          });
+          signalLine.setData(
+            cfg.results
+              .filter((r) => r.available && r.raw_value?.signal_line !== undefined)
+              .map((r) => ({
+                time: (new Date(r.timestamp).getTime() / 1000) as Time,
+                value: r.raw_value.signal_line as number,
+              }))
+          );
+
+          // Histogram
+          const histSeries = macdChart.addSeries(HistogramSeries, {
+            title: "Histogram",
+          });
+          histSeries.setData(
+            cfg.results
+              .filter((r) => r.available && r.raw_value?.histogram !== undefined)
+              .map((r) => ({
+                time: (new Date(r.timestamp).getTime() / 1000) as Time,
+                value: r.raw_value.histogram as number,
+                color: (r.raw_value.histogram || 0) >= 0 ? "#10b981" : "#ef4444",
+              }))
+          );
         });
     }
 
-    // 4. Create Volume Chart Panel
+    // 4. Create Volume / Average Volume Sub-Chart (if active)
     if (hasVol && volChartContainerRef.current) {
       const volChart = createChart(volChartContainerRef.current, {
-        ...chartOptions,
+        width: getContainerWidth(),
         height: 160,
+        layout: {
+          background: { type: ColorType.Solid, color: "#090d16" },
+          textColor: "#94a3b8",
+        },
+        grid: {
+          vertLines: { color: "#1e293b" },
+          horzLines: { color: "#1e293b" },
+        },
+        timeScale: { borderColor: "#334155", timeVisible: true },
       });
       volChartRef.current = volChart;
 
-      const volHist = volChart.addSeries(HistogramSeries, {
-        color: "#3b82f6",
-        title: "Volume",
-      });
-      const volData = candles.map((c) => ({
-        time: (new Date(c.timestamp).getTime() / 1000) as Time,
-        value: c.volume,
-      }));
-      volHist.setData(volData);
-
       activeSeriesConfigs
-        .filter((c) => c.indicator === "AVERAGE_VOLUME")
+        .filter((c) => c.indicator === "VOLUME" || c.indicator === "AVERAGE_VOLUME")
         .forEach((cfg) => {
-          const avgVolLine = volChart.addSeries(LineSeries, {
-            color: cfg.color,
-            lineWidth: 2,
-            title: `Avg Volume (${cfg.params.period || 20})`,
-          });
-          const avgVolData = cfg.results
-            .filter((r) => r.available && r.value !== null && typeof r.value === "number")
-            .map((r) => ({
-              time: (new Date(r.timestamp).getTime() / 1000) as Time,
-              value: r.value as number,
-            }));
-          avgVolLine.setData(avgVolData);
+          if (cfg.indicator === "VOLUME") {
+            const volSeries = volChart.addSeries(HistogramSeries, {
+              color: cfg.color || "#8b5cf6",
+              title: "Volume",
+            });
+            volSeries.setData(
+              cfg.results
+                .filter((r) => r.available && r.raw_value !== null)
+                .map((r) => ({
+                  time: (new Date(r.timestamp).getTime() / 1000) as Time,
+                  value: r.raw_value as number,
+                }))
+            );
+          } else {
+            const avgVolSeries = volChart.addSeries(LineSeries, {
+              color: cfg.color || "#06b6d4",
+              lineWidth: 2,
+              title: `Avg Volume(${cfg.params.period || 20})`,
+            });
+            avgVolSeries.setData(
+              cfg.results
+                .filter((r) => r.available && r.raw_value !== null)
+                .map((r) => ({
+                  time: (new Date(r.timestamp).getTime() / 1000) as Time,
+                  value: r.raw_value as number,
+                }))
+            );
+          }
         });
     }
 
-    // Handle Window Resize
+    // Auto-fit time scale for all active charts
+    const charts = [
+      mainChartRef.current,
+      rsiChartRef.current,
+      macdChartRef.current,
+      volChartRef.current,
+    ].filter(Boolean) as IChartApi[];
+
+    charts.forEach((ch) => ch.timeScale().fitContent());
+
+    // Window Resize Handler
     const handleResize = () => {
-      if (mainChartContainerRef.current && mainChartRef.current) {
-        mainChartRef.current.applyOptions({ width: mainChartContainerRef.current.clientWidth });
-      }
-      if (rsiChartContainerRef.current && rsiChartRef.current) {
-        rsiChartRef.current.applyOptions({ width: rsiChartContainerRef.current.clientWidth });
-      }
-      if (macdChartContainerRef.current && macdChartRef.current) {
-        macdChartRef.current.applyOptions({ width: macdChartContainerRef.current.clientWidth });
-      }
-      if (volChartContainerRef.current && volChartRef.current) {
-        volChartRef.current.applyOptions({ width: volChartContainerRef.current.clientWidth });
-      }
+      const newWidth = getContainerWidth();
+      charts.forEach((ch) => ch.applyOptions({ width: newWidth }));
     };
 
     window.addEventListener("resize", handleResize);
@@ -291,7 +343,7 @@ export function CandlestickChart({
       if (macdChartRef.current) macdChartRef.current.remove();
       if (volChartRef.current) volChartRef.current.remove();
     };
-  }, [candles, primaryIndicator, comparisons, hasRsi, hasMacd, hasVol]);
+  }, [candles, activeSeriesConfigs, hasRsi, hasMacd, hasVol]);
 
   return (
     <div className="bg-slate-950 border border-slate-900 rounded-xl p-4 space-y-4 font-sans">

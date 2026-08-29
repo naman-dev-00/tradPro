@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { graphToStrategy, strategyToGraph } from "../src/lib/graph";
-import { Node, Edge } from "@xyflow/react";
 
 describe("Graph Conversion Library", () => {
   const exampleStrategy = {
@@ -38,7 +37,7 @@ describe("Graph Conversion Library", () => {
   };
 
   it("should convert a strategy payload into a graph of nodes and edges", () => {
-    const { nodes, edges } = strategyToGraph(exampleStrategy);
+    const { nodes } = strategyToGraph(exampleStrategy);
 
     const rootNode = nodes.find((n) => n.type === "strategyRoot");
     expect(rootNode).toBeDefined();

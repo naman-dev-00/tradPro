@@ -167,6 +167,12 @@ export const RuleLabWorkspace: React.FC = () => {
             >
               <span>📈</span> Indicator Lab
             </Link>
+            <Link
+              href="/multi-series-lab"
+              className="px-3.5 py-1.5 bg-sky-950/60 hover:bg-sky-900/60 text-sky-300 border border-sky-600/40 rounded text-xs font-semibold transition-colors flex items-center gap-1.5"
+            >
+              <span>🌐</span> Multi-Series Lab
+            </Link>
           </div>
         </div>
 
