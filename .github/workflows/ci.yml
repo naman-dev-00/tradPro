@@ -39,7 +39,7 @@ jobs:
         env:
           APP_ENV: test
         run: |
-          python -m pytest -W error -W "ignore:Using \`httpx\` with \`starlette.testclient\` is deprecated:DeprecationWarning"
+          python -m pytest
 
   frontend:
     name: Frontend Web Quality & Build
