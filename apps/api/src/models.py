@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, text
 from src.database import Base, UTCDateTime
 
 class Strategy(Base):
@@ -50,7 +50,7 @@ class InspectionRun(Base):
     failure_summary = Column(String(2048), nullable=True)
     result_summary = Column(String(2048), nullable=True)
     result_payload = Column(JSON(none_as_null=True), nullable=True)
-    synthetic_data_confirmed = Column(Boolean, nullable=False, default=True)
+    synthetic_data_confirmed = Column(Boolean, nullable=False, default=True, server_default=text('true'))
     request_fingerprint = Column(String(64), index=True, nullable=True)
     completed_fingerprint = Column(String(64), index=True, unique=True, nullable=True)
     manifest_checksums_snapshot = Column(JSON(none_as_null=True), nullable=True)

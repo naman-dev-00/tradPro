@@ -92,3 +92,26 @@ def test_alembic_migration_fresh_and_upgrade(tmp_path):
     import gc
     engine.dispose()
     gc.collect()
+
+def test_alembic_migration_postgres_compatibility():
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url or not db_url.startswith("postgresql"):
+        pytest.skip("PostgreSQL test skipped: DATABASE_URL is not set to a PostgreSQL connection.")
+
+    engine = create_engine(db_url)
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    assert "inspection_runs" in tables
+    assert "strategies" in tables
+
+    columns = {col["name"]: col for col in inspector.get_columns("inspection_runs")}
+    assert "synthetic_data_confirmed" in columns
+    assert "completed_fingerprint" in columns
+    assert "request_fingerprint" in columns
+
+    # Test query execution on PostgreSQL engine
+    with engine.connect() as conn:
+        res = conn.execute(text("SELECT 1")).scalar()
+        assert res == 1
+
+    engine.dispose()

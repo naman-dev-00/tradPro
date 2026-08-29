@@ -39,7 +39,7 @@ def upgrade() -> None:
         sa.Column('failure_summary', sa.String(length=2048), nullable=True),
         sa.Column('result_summary', sa.String(length=2048), nullable=True),
         sa.Column('result_payload', sa.JSON(), nullable=True),
-        sa.Column('synthetic_data_confirmed', sa.Boolean(), nullable=False, server_default=sa.text('1')),
+        sa.Column('synthetic_data_confirmed', sa.Boolean(), nullable=False, server_default=sa.text('true')),
         sa.Column('request_fingerprint', sa.String(length=64), nullable=True),
         sa.Column('completed_fingerprint', sa.String(length=64), nullable=True),
         sa.Column('manifest_checksums_snapshot', sa.JSON(), nullable=True),
