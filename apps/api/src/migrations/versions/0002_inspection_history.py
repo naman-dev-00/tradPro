@@ -1,6 +1,6 @@
 """Add inspection_runs table for persistent history and historical replays
 
-Revision ID: 0002_add_inspection_history_and_replays
+Revision ID: 0002_inspection_history
 Revises: 0001_initial_schema
 Create Date: 2026-08-29 17:45:00.000000
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = '0002_add_inspection_history_and_replays'
+revision: str = '0002_inspection_history'
 down_revision: Union[str, None] = '0001_initial_schema'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
