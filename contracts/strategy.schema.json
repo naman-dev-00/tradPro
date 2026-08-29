@@ -63,8 +63,23 @@
         },
         "operator": {
           "type": "string",
-          "enum": ["GREATER_THAN", "LESS_THAN", "CROSSES_ABOVE", "CROSSES_BELOW", "TOUCHES", "BETWEEN"],
+          "enum": [
+            "GREATER_THAN",
+            "LESS_THAN",
+            "GREATER_THAN_OR_EQUAL",
+            "LESS_THAN_OR_EQUAL",
+            "EQUALS",
+            "CROSSES_ABOVE",
+            "CROSSES_BELOW",
+            "TOUCHES",
+            "BETWEEN"
+          ],
           "description": "Comparison operator for the condition"
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional numeric tolerance for EQUALS or TOUCHES operators"
         },
         "rhs": {
           "$ref": "#/definitions/ComparisonValue",

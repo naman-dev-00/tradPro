@@ -2,6 +2,17 @@ import datetime
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 
+class CandleInput(BaseModel):
+    timestamp: datetime.datetime
+    instrument_id: str
+    timeframe: str
+    open: float = Field(..., gt=0)
+    high: float = Field(..., gt=0)
+    low: float = Field(..., gt=0)
+    close: float = Field(..., gt=0)
+    volume: float = Field(..., ge=0)
+    is_closed: bool = True
+
 class IndicatorParams(BaseModel):
     period: Optional[int] = Field(None, ge=1)
     source: Optional[str] = None
@@ -20,10 +31,12 @@ class ComparisonValue(BaseModel):
 
 class ConditionNode(BaseModel):
     type: str
+    id: Optional[str] = None
     conditions: Optional[List['ConditionNode']] = None
     lhs: Optional[IndicatorExpression] = None
     operator: Optional[str] = None
     rhs: Optional[ComparisonValue] = None
+    tolerance: Optional[float] = Field(None, ge=0)
 
 ConditionNode.model_rebuild()
 

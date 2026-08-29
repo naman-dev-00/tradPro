@@ -1,8 +1,10 @@
 # TradePro Option Strategy & Analytics Workspace
 
-TradePro is an educational options strategy-building, backtesting, and paper-trading workspace.
+[![CI](https://github.com/naman-dev-00/tradPro/actions/workflows/ci.yml/badge.svg)](https://github.com/naman-dev-00/tradPro/actions/workflows/ci.yml)
 
-This repository covers **Milestone 1 (Strategy Builder Foundation)** and **Milestone 2A (Candle Data & Deterministic Indicator Engine)**.
+TradePro is an educational options strategy-building, indicator analysis, and rule evaluation workspace.
+
+This repository covers **Milestone 1 (Strategy Builder Foundation)**, **Milestone 2A (Candle Data & Indicator Engine)**, and **Milestone 2B (Educational Rule Evaluation Engine & Rule Lab UI)**.
 
 ---
 
@@ -123,18 +125,35 @@ The **Indicator Lab** provides a visual educational workspace for inspecting ind
 
 ---
 
-## Running Automated Test Suites
+---
 
-### Full Backend API Test Suite (`pytest`)
-Runs all Milestone 1, 2A, and dataset backend tests:
+## Educational Rule Inspection Lab (`/rule-lab`)
+
+The **Rule Inspection Lab** provides deterministic Boolean rule evaluation of options strategies:
+- **Disclaimers**: Prominent educational notice stating that results show Boolean rule evaluation and are not trading recommendations or execution signals.
+- **Neutral Evaluation States**: Evaluates rules to strictly neutral statuses: `TRUE`, `FALSE`, `UNAVAILABLE`, `INVALID`.
+- **Interactive Tree Viewers**: Expandable Reference and Subject scope condition trees rendering timestamps, evaluated left/right values, operator tolerances, and warm-up/expiration reasons.
+- **Strategy Integration**: Jump directly from Rule Lab to Strategy Builder to modify strategy definitions.
+
+---
+
+## GitHub Actions CI Workflow
+
+Automated CI workflow runs on pull requests targeting `main`, pushes to `main`, and manual dispatch:
+- **Backend Job**: Sets up Python 3.12, installs `apps/api/requirements.txt`, runs `pytest` with warnings treated as errors.
+- **Frontend Job**: Sets up Node 22.x, runs `npm ci`, Vitest (`npm run test`), ESLint (`npm run lint`), TypeScript check (`npx tsc --noEmit`), and Next.js build (`npm run build`).
+
+### Running Automated Test Suites Locally
+
 ```bash
+# 1. Full Backend API Test Suite (pytest with warning enforcement)
 cd apps/api
 python -m pytest
-```
 
-### Frontend Web Test Suite (`vitest`)
-Runs all graph serialization and Indicator Lab component tests:
-```bash
+# 2. Full Frontend Web Test Suite (vitest, lint, tsc, build)
 cd apps/web
 npm run test
+npm run lint
+npx tsc --noEmit
+npm run build
 ```

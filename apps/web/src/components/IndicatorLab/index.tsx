@@ -43,6 +43,23 @@ export function IndicatorLab() {
   const [loadingCalculation, setLoadingCalculation] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
+  // 2. Load Dataset Detail
+  const loadDataset = async (id: string) => {
+    setLoadingDataset(true);
+    setApiError(null);
+    try {
+      const data = await getSyntheticDatasetById(id);
+      setDatasetDetail(data);
+      setLoadingDataset(false);
+      // Reset calculations on dataset change
+      setPrimaryCalculation(null);
+      setComparisons([]);
+    } catch (err: any) {
+      setApiError(`Error loading dataset: ${err.message}`);
+      setLoadingDataset(false);
+    }
+  };
+
   // 1. Initial Load: Datasets & Supported Indicators
   useEffect(() => {
     Promise.all([getSyntheticDatasets(), getSupportedIndicators()])
@@ -61,23 +78,6 @@ export function IndicatorLab() {
         setLoadingDataset(false);
       });
   }, []);
-
-  // 2. Load Dataset Detail
-  const loadDataset = async (id: string) => {
-    setLoadingDataset(true);
-    setApiError(null);
-    try {
-      const data = await getSyntheticDatasetById(id);
-      setDatasetDetail(data);
-      setLoadingDataset(false);
-      // Reset calculations on dataset change
-      setPrimaryCalculation(null);
-      setComparisons([]);
-    } catch (err: any) {
-      setApiError(`Error loading dataset: ${err.message}`);
-      setLoadingDataset(false);
-    }
-  };
 
   // 3. Handle Dataset Change
   const handleSelectDataset = (id: string) => {

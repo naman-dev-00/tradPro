@@ -18,7 +18,6 @@ function BuilderContent() {
 
   useEffect(() => {
     if (strategyId) {
-      setLoading(true);
       getStrategyById(strategyId)
         .then((data) => {
           // Extract payload dict stored in database Strategy row
@@ -78,6 +77,9 @@ function BuilderContent() {
         <div className="flex items-center gap-3 text-xs font-semibold">
           <Link href="/indicator-lab" className="text-indigo-400 hover:text-indigo-300 font-bold transition">
             Open Indicator Lab →
+          </Link>
+          <Link href="/rule-lab" className="text-purple-400 hover:text-purple-300 font-bold transition">
+            Open Rule Lab →
           </Link>
         </div>
       </div>

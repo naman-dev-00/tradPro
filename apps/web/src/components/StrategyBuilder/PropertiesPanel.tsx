@@ -175,6 +175,9 @@ export function PropertiesPanel({ selectedNode, onUpdate }: PropertiesPanelProps
               {[
                 { val: "GREATER_THAN", label: "Greater Than (>)" },
                 { val: "LESS_THAN", label: "Less Than (<)" },
+                { val: "GREATER_THAN_OR_EQUAL", label: "Greater Than or Equal (>=)" },
+                { val: "LESS_THAN_OR_EQUAL", label: "Less Than or Equal (<=)" },
+                { val: "EQUALS", label: "Equals (==)" },
                 { val: "CROSSES_ABOVE", label: "Crosses Above" },
                 { val: "CROSSES_BELOW", label: "Crosses Below" },
                 { val: "TOUCHES", label: "Touches" },
@@ -184,6 +187,24 @@ export function PropertiesPanel({ selectedNode, onUpdate }: PropertiesPanelProps
               ))}
             </select>
           </div>
+
+          {/* TOLERANCE (For EQUALS or TOUCHES) */}
+          {(data.operator === "EQUALS" || data.operator === "TOUCHES") && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 mb-1">
+                Tolerance ({data.operator === "EQUALS" ? "Default 1e-6" : "Default 1e-4"})
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500 text-slate-200"
+                value={data.tolerance ?? ""}
+                placeholder="Auto default tolerance"
+                onChange={(e) => handleChange("tolerance", e.target.value === "" ? undefined : Number(e.target.value))}
+              />
+            </div>
+          )}
 
           {/* RHS TARGET */}
           <div className="border border-slate-800 p-2.5 rounded bg-slate-900/40">
