@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, inspect, text
 from alembic.config import Config
 from alembic import command
 from src.database import Base
+from src.config import settings
 
 def test_alembic_migration_empty_to_head_direct(tmp_path):
     db_file = tmp_path / "test_migration_empty.db"
@@ -169,3 +170,48 @@ def test_alembic_migration_postgres_compatibility():
         assert current_rev == "0002_inspection_history"
 
     engine.dispose()
+
+def test_alembic_url_precedence_explicit_url_takes_priority(monkeypatch, tmp_path):
+    pg_url = "postgresql://user:secret@localhost:5432/testdb"
+    monkeypatch.setattr(settings, "DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+
+    db_file = tmp_path / "explicit_sqlite.db"
+    sqlite_url = f"sqlite:///{db_file}"
+
+    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+    config = Config(alembic_ini_path)
+    config.set_main_option("sqlalchemy.url", sqlite_url)
+    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
+
+    from src.migrations.env import configure_database_url
+    res_url = configure_database_url(config)
+    assert res_url == sqlite_url
+    assert config.get_main_option("sqlalchemy.url") == sqlite_url
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(sqlite_url)
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    assert "strategies" in tables
+    assert "inspection_runs" in tables
+
+    import gc
+    engine.dispose()
+    gc.collect()
+
+def test_alembic_url_precedence_runtime_url_fallback(monkeypatch):
+    pg_url = "postgresql://user:pass%40word@localhost:5432/testdb"
+    monkeypatch.setattr(settings, "DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+
+    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+    config = Config(alembic_ini_path)
+
+    from src.migrations.env import configure_database_url
+    res_url = configure_database_url(config)
+    assert res_url == pg_url
+    # Ensure section parsing works without ConfigParser InterpolationSyntaxError
+    section = config.get_section(config.config_ini_section, {})
+    assert section.get("sqlalchemy.url") == pg_url
