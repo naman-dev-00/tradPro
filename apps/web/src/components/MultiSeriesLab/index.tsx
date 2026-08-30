@@ -190,14 +190,37 @@ export const MultiSeriesLabWorkspace: React.FC = () => {
         {announcement}
       </div>
 
-      <header className="mb-6">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-2">
-          Multi-Series Rule Inspection Lab
-        </h1>
-        <p className="text-sm text-slate-400">
-          Inspect Boolean strategy rules independently across multiple packaged synthetic subject datasets.
-        </p>
+      <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-2">
+            Multi-Series Rule Inspection Lab
+          </h1>
+          <p className="text-sm text-slate-400">
+            Inspect Boolean strategy rules independently across multiple packaged synthetic subject datasets.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/replay-comparison-lab"
+            className="inline-flex items-center space-x-1.5 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+          >
+            <span>Replay Comparison</span>
+          </Link>
+          <Link
+            href="/historical-replay-lab"
+            className="inline-flex items-center space-x-1.5 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+          >
+            <span>Historical Replay Lab</span>
+          </Link>
+          <Link
+            href="/inspection-history"
+            className="inline-flex items-center space-x-1.5 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+          >
+            <span>Inspection History</span>
+          </Link>
+        </div>
       </header>
+
 
       <EducationalNotice />
 

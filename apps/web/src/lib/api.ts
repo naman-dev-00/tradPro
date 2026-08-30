@@ -450,3 +450,96 @@ export function getExportJsonUrl(runId: string): string {
 export function getExportCsvUrl(runId: string): string {
   return `${API_BASE_URL}/api/v1/replays/${runId}/export.csv`;
 }
+
+export function getExportUrl(runId: string, format: "json" | "csv" = "json"): string {
+  return `${API_BASE_URL}/api/v1/replays/${runId}/export?format=${format}`;
+}
+
+export interface DatasetChecksumResult {
+  dataset_id: string;
+  stored_checksum?: string | null;
+  current_checksum?: string | null;
+  matches: boolean;
+}
+
+export interface ReplayVerificationResult {
+  run_id: string;
+  verification_status: "VERIFIED" | "MISMATCH" | "UNVERIFIABLE" | "INVALID";
+  stored_request_fingerprint?: string | null;
+  recomputed_request_fingerprint?: string | null;
+  fingerprint_matches: boolean;
+  stored_manifest_version?: string | null;
+  current_manifest_version?: string | null;
+  manifest_version_matches: boolean;
+  stored_engine_version?: string | null;
+  current_engine_version?: string | null;
+  engine_version_matches: boolean;
+  stored_replay_schema_version?: string | null;
+  current_replay_schema_version?: string | null;
+  replay_schema_version_matches: boolean;
+  dataset_checksum_results: DatasetChecksumResult[];
+  strategy_snapshot_present: boolean;
+  result_payload_present: boolean;
+  reasons: string[];
+}
+
+export interface ReplayComparisonRequest {
+  baseline_run_id: string;
+  comparison_run_id: string;
+  include_unchanged?: boolean;
+}
+
+export interface ReplayStatusDifference {
+  timestamp: string;
+  dataset_id: string;
+  baseline_present: boolean;
+  comparison_present: boolean;
+  baseline_status?: string | null;
+  comparison_status?: string | null;
+  changed: boolean;
+  baseline_condition_ids: Record<string, string[]>;
+  comparison_condition_ids: Record<string, string[]>;
+  newly_true_condition_ids: string[];
+  no_longer_true_condition_ids: string[];
+  newly_false_condition_ids: string[];
+  no_longer_false_condition_ids: string[];
+  newly_unavailable_condition_ids: string[];
+  newly_invalid_condition_ids: string[];
+  explanation: string;
+}
+
+export interface ReplayComparisonResult {
+  baseline_metadata: Record<string, any>;
+  comparison_metadata: Record<string, any>;
+  aligned_point_count: number;
+  baseline_only_point_count: number;
+  comparison_only_point_count: number;
+  unchanged_point_count: number;
+  changed_point_count: number;
+  status_transition_counts: Record<string, number>;
+  differences: ReplayStatusDifference[];
+  warnings: string[];
+}
+
+export async function verifyReplayRun(runId: string): Promise<ReplayVerificationResult> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/replays/${runId}/verify`);
+  if (!res.ok) {
+    const errData = await res.json();
+    throw new Error(errData.detail || `Failed to verify run '${runId}'`);
+  }
+  return res.json();
+}
+
+export async function compareReplays(req: ReplayComparisonRequest): Promise<ReplayComparisonResult> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/replays/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const errData = await res.json();
+    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    throw new Error(message || "Failed to compare replay runs");
+  }
+  return res.json();
+}

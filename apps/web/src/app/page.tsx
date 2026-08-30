@@ -62,8 +62,10 @@ export default function Dashboard() {
             <Link href="/rule-lab" className="hover:text-white transition px-3 py-1.5">Rule Lab</Link>
             <Link href="/multi-series-lab" className="hover:text-white transition px-3 py-1.5">Multi-Series Lab</Link>
             <Link href="/historical-replay-lab" className="hover:text-white transition px-3 py-1.5">Historical Replay</Link>
+            <Link href="/replay-comparison-lab" className="hover:text-white transition px-3 py-1.5 text-sky-400 font-bold">Replay Comparison</Link>
             <Link href="/inspection-history" className="hover:text-white transition px-3 py-1.5">History</Link>
           </nav>
+
         </div>
       </header>
 

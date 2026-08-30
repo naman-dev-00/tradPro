@@ -2,11 +2,17 @@
 
 [![CI](https://github.com/naman-dev-00/tradPro/actions/workflows/ci.yml/badge.svg)](https://github.com/naman-dev-00/tradPro/actions/workflows/ci.yml)
 
-TradePro is an educational options strategy-building, indicator analysis, and rule evaluation workspace.
+TradePro is an educational options strategy-building, indicator analysis, rule evaluation workspace, historical replay, and deterministic comparison lab.
 
-This repository covers **Milestone 1 (Strategy Builder Foundation)**, **Milestone 2A (Candle Data & Indicator Engine)**, and **Milestone 2B (Educational Rule Evaluation Engine & Rule Lab UI)**.
+This repository covers **Milestone 1**, **Milestone 2A**, **Milestone 2B**, **Milestone 3**, **Milestone 4A**, and **Milestone 4B (Deterministic Replay Comparison, Reproducibility Verification & Educational Exports)**.
+
+### Documentation
+- [Architecture & Alignment Specs](docs/architecture_replay_comparison.md)
+- [Reproducibility Verification Matrix](docs/replay_verification.md)
+- [Educational Exports & Formula Protection](docs/educational_exports.md)
 
 ---
+
 
 ## Repository Structure
 

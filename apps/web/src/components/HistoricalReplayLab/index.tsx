@@ -24,7 +24,9 @@ import {
   FileCode,
   Clock,
   History,
+  GitCompare,
 } from "lucide-react";
+
 
 export function HistoricalReplayLab() {
   const [manifest, setManifest] = useState<DatasetManifestEntry[]>([]);
@@ -165,6 +167,13 @@ export function HistoricalReplayLab() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <Link
+            href="/replay-comparison-lab"
+            className="inline-flex items-center space-x-2 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+          >
+            <GitCompare className="h-4 w-4 text-sky-400" />
+            <span>Replay Comparison</span>
+          </Link>
+          <Link
             href="/inspection-history"
             className="inline-flex items-center space-x-2 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
           >
@@ -179,6 +188,7 @@ export function HistoricalReplayLab() {
             <span>Multi-Series Lab</span>
           </Link>
         </div>
+
       </div>
 
       <EducationalNotice />
