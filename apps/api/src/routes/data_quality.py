@@ -9,6 +9,8 @@ from src.engine.dataset_quality_models import (
 )
 from src.services.dataset_quality_service import DatasetQualityService
 
+from src.auth.rate_limiter import rate_limiter, get_client_ip
+
 logger = logging.getLogger("tradepro.data_quality")
 
 router = APIRouter(prefix="/api/v1/data-quality", tags=["Data Quality"])
@@ -19,6 +21,9 @@ def list_whitelisted_datasets():
 
 @router.post("/audit", response_model=DatasetAuditBatchResponse)
 def batch_audit_datasets(request: DatasetAuditBatchRequest, req: Request):
+    ip = get_client_ip(req)
+    rate_limiter.check_rate_limit(f"data_quality_batch:{ip}", max_requests=15, window_seconds=60)
+
     # Log validated dataset count safely
     req_id = getattr(req.state, "request_id", "unknown")
     logger.info(
@@ -26,6 +31,7 @@ def batch_audit_datasets(request: DatasetAuditBatchRequest, req: Request):
         extra={"request_id": req_id, "dataset_count": len(request.dataset_ids)},
     )
     return DatasetQualityService.batch_audit_datasets(request.dataset_ids)
+
 
 @router.get("/datasets/{dataset_id}/export")
 def export_dataset_quality_report(dataset_id: str):

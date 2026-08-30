@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 import { getStrategies, StrategyResponse } from "../lib/api";
 import { Plus, Sliders, Clock, AlertTriangle } from "lucide-react";
 
@@ -65,9 +66,8 @@ export default function Dashboard() {
             <Link href="/replay-comparison-lab" className="hover:text-white transition px-3 py-1.5 text-sky-400 font-bold">Replay Comparison</Link>
             <Link href="/data-quality-lab" className="hover:text-white transition px-3 py-1.5 text-emerald-400 font-bold">Data Quality</Link>
             <Link href="/inspection-history" className="hover:text-white transition px-3 py-1.5">History</Link>
-
+            <AuthHeaderBadge />
           </nav>
-
         </div>
       </header>
 

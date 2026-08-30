@@ -1,11 +1,7 @@
 import pytest
 from datetime import datetime, timezone
-from fastapi.testclient import TestClient
-from src.main import app
 from src.database import get_db
 from src.models import Strategy
-
-client = TestClient(app)
 
 SAMPLE_STRATEGY = {
     "name": "API Multi Series Test",
@@ -23,7 +19,7 @@ SAMPLE_STRATEGY = {
 }
 
 
-def test_get_multi_series_datasets():
+def test_get_multi_series_datasets(client):
     response = client.get("/multi-series/datasets")
     assert response.status_code == 200
     data = response.json()
@@ -35,7 +31,7 @@ def test_get_multi_series_datasets():
     assert len(subj_entries) >= 4
 
 
-def test_post_evaluate_multi_series_success():
+def test_post_evaluate_multi_series_success(client):
     payload = {
         "strategy": SAMPLE_STRATEGY,
         "reference_dataset_id": "synthetic_underlying_nifty_15m",
@@ -55,7 +51,7 @@ def test_post_evaluate_multi_series_success():
     assert sum(data["status_counts"].values()) == 2
 
 
-def test_post_evaluate_unknown_strategy_id():
+def test_post_evaluate_unknown_strategy_id(client):
     payload = {
         "strategy_id": "00000000-0000-0000-0000-000000000000",
         "reference_dataset_id": "synthetic_underlying_nifty_15m",
@@ -67,7 +63,7 @@ def test_post_evaluate_unknown_strategy_id():
     assert "not found" in response.json()["detail"]
 
 
-def test_post_evaluate_unexpected_fields_forbid():
+def test_post_evaluate_unexpected_fields_forbid(client):
     payload = {
         "strategy": SAMPLE_STRATEGY,
         "reference_dataset_id": "synthetic_underlying_nifty_15m",
@@ -80,7 +76,7 @@ def test_post_evaluate_unexpected_fields_forbid():
     assert "Extra inputs are not permitted" in str(response.json())
 
 
-def test_post_evaluate_stack_trace_suppression():
+def test_post_evaluate_stack_trace_suppression(client):
     payload = {
         "strategy": SAMPLE_STRATEGY,
         "reference_dataset_id": "non_existent_ref_dataset",

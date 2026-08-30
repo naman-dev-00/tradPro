@@ -1,5 +1,126 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// --- Milestone 5B: Authentication & Authorization ---
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  role: "VIEWER" | "EDITOR" | "ADMIN";
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface LegacyTransferRequest {
+  target_user_id: string;
+  resource_type: "STRATEGIES" | "INSPECTION_RUNS";
+  resource_ids: string[];
+}
+
+export interface LegacyTransferResponse {
+  transferred_count: number;
+  rejected_count: number;
+  message: string;
+}
+
+export function getCsrfTokenFromCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|;\s*)tradepro_csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+export async function fetchCsrfToken(): Promise<string> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/auth/csrf-token`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to fetch CSRF token");
+  }
+  const data = await res.json();
+  return data.csrf_token;
+}
+
+export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
+  const method = (options.method || "GET").toUpperCase();
+  const headers = new Headers(options.headers || {});
+
+  if (!headers.has("Content-Type") && options.body && typeof options.body === "string") {
+    headers.set("Content-Type", "application/json");
+  }
+
+  // Attach CSRF token for non-safe methods
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    let csrf = getCsrfTokenFromCookie();
+    if (!csrf) {
+      try {
+        csrf = await fetchCsrfToken();
+      } catch (err) {
+        console.warn("Could not fetch CSRF token before mutation:", err);
+      }
+    }
+    if (csrf && !headers.has("X-CSRF-Token")) {
+      headers.set("X-CSRF-Token", csrf);
+    }
+  }
+
+  return fetch(url, {
+    ...options,
+    headers,
+    credentials: "include",
+  });
+}
+
+export async function getCurrentUser(): Promise<User | null> {
+  try {
+    const res = await apiFetch("/api/v1/auth/me");
+    if (res.status === 401 || res.status === 403) {
+      return null;
+    }
+    if (!res.ok) {
+      return null;
+    }
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function loginUser(username_or_email: string, password: string): Promise<User> {
+  let csrf = getCsrfTokenFromCookie();
+  if (!csrf) {
+    csrf = await fetchCsrfToken();
+  }
+
+  const res = await apiFetch("/api/v1/auth/login", {
+    method: "POST",
+    headers: {
+      "X-CSRF-Token": csrf,
+    },
+    body: JSON.stringify({ username_or_email, password }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const message = typeof errData.detail === "string" ? errData.detail : "Invalid credentials";
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+
+export async function logoutUser(): Promise<void> {
+  const res = await apiFetch("/api/v1/auth/logout", {
+    method: "POST",
+  });
+  if (!res.ok && res.status !== 401) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Logout failed");
+  }
+}
+
+// --- Strategy Builder & Core Engine ---
+
 export interface ValidationResponse {
   valid: boolean;
   errors: string[];
@@ -83,7 +204,7 @@ export interface CalculateIndicatorResponse {
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE_URL}/health`);
+    const res = await apiFetch("/health");
     if (!res.ok) return false;
     const data = await res.json();
     return data.status === "healthy";
@@ -93,9 +214,8 @@ export async function checkHealth(): Promise<boolean> {
 }
 
 export async function validateStrategy(payload: any): Promise<ValidationResponse> {
-  const res = await fetch(`${API_BASE_URL}/strategies/validate`, {
+  const res = await apiFetch("/strategies/validate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -110,12 +230,11 @@ export async function validateStrategy(payload: any): Promise<ValidationResponse
 
 export async function saveStrategy(payload: any, isUpdate = false): Promise<StrategyResponse> {
   const url = isUpdate
-    ? `${API_BASE_URL}/strategies/${payload.id}`
-    : `${API_BASE_URL}/strategies`;
+    ? `/strategies/${payload.id}`
+    : `/strategies`;
 
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method: isUpdate ? "PUT" : "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
@@ -129,25 +248,25 @@ export async function saveStrategy(payload: any, isUpdate = false): Promise<Stra
 }
 
 export async function getStrategies(): Promise<StrategyResponse[]> {
-  const res = await fetch(`${API_BASE_URL}/strategies`);
+  const res = await apiFetch("/strategies");
   if (!res.ok) throw new Error("Failed to fetch strategies list");
   return res.json();
 }
 
 export async function getStrategyById(id: string): Promise<StrategyResponse> {
-  const res = await fetch(`${API_BASE_URL}/strategies/${id}`);
+  const res = await apiFetch(`/strategies/${id}`);
   if (!res.ok) throw new Error(`Failed to fetch strategy with id ${id}`);
   return res.json();
 }
 
 export async function getSyntheticDatasets(): Promise<{ datasets: DatasetMetadata[] }> {
-  const res = await fetch(`${API_BASE_URL}/indicators/datasets`);
+  const res = await apiFetch("/indicators/datasets");
   if (!res.ok) throw new Error("Failed to fetch synthetic datasets list");
   return res.json();
 }
 
 export async function getSyntheticDatasetById(datasetId: string): Promise<DatasetDetailResponse> {
-  const res = await fetch(`${API_BASE_URL}/indicators/datasets/${datasetId}`);
+  const res = await apiFetch(`/indicators/datasets/${datasetId}`);
   if (!res.ok) {
     const errData = await res.json();
     throw new Error(errData.detail || `Failed to fetch dataset '${datasetId}'`);
@@ -156,15 +275,14 @@ export async function getSyntheticDatasetById(datasetId: string): Promise<Datase
 }
 
 export async function getSupportedIndicators(): Promise<{ indicators: SupportedIndicatorMetadata[] }> {
-  const res = await fetch(`${API_BASE_URL}/indicators/supported`);
+  const res = await apiFetch("/indicators/supported");
   if (!res.ok) throw new Error("Failed to fetch supported indicators list");
   return res.json();
 }
 
 export async function calculateIndicator(req: CalculateIndicatorRequest): Promise<CalculateIndicatorResponse> {
-  const res = await fetch(`${API_BASE_URL}/indicators/calculate`, {
+  const res = await apiFetch("/indicators/calculate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
 
@@ -220,9 +338,8 @@ export interface RuleEvaluationRequest {
 }
 
 export async function evaluateRules(req: RuleEvaluationRequest): Promise<RuleEvaluationResult> {
-  const res = await fetch(`${API_BASE_URL}/rules/evaluate`, {
+  const res = await apiFetch("/rules/evaluate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
 
@@ -235,7 +352,7 @@ export async function evaluateRules(req: RuleEvaluationRequest): Promise<RuleEva
 }
 
 export async function getSupportedOperators(): Promise<{ operators: any[] }> {
-  const res = await fetch(`${API_BASE_URL}/rules/operators`);
+  const res = await apiFetch("/rules/operators");
   if (!res.ok) throw new Error("Failed to fetch supported operators list");
   return res.json();
 }
@@ -270,6 +387,8 @@ export interface SeriesEvaluationResult {
   inspection_summary: string;
 }
 
+export type CandidateEvaluationResult = SeriesEvaluationResult;
+
 export interface MultiSeriesEvaluationResult {
   strategy_id?: string | null;
   requested_evaluation_timestamp: string;
@@ -290,15 +409,14 @@ export interface MultiSeriesEvaluationRequest {
 }
 
 export async function getDatasetManifest(): Promise<DatasetManifestEntry[]> {
-  const res = await fetch(`${API_BASE_URL}/multi-series/datasets`);
+  const res = await apiFetch("/multi-series/datasets");
   if (!res.ok) throw new Error("Failed to fetch dataset manifest");
   return res.json();
 }
 
 export async function evaluateMultiSeries(req: MultiSeriesEvaluationRequest): Promise<MultiSeriesEvaluationResult> {
-  const res = await fetch(`${API_BASE_URL}/multi-series/evaluate`, {
+  const res = await apiFetch("/multi-series/evaluate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
 
@@ -347,19 +465,41 @@ export interface HistoricalReplayResult {
     is_exact_match: boolean;
     mismatches?: Record<string, any>;
     warning?: string | null;
+    engine_version?: string;
+    manifest_version?: string;
+    request_fingerprint?: string;
+    completed_fingerprint?: string;
+    synthetic_data_confirmed?: boolean;
   };
-  warnings: string[];
+  failure_summary?: string;
+  is_reused?: boolean;
 }
 
 export interface HistoricalReplayRequest {
-  strategy_payload?: any;
   strategy_id?: string;
+  strategy_payload?: any;
   reference_dataset_id: string;
   subject_dataset_ids: string[];
   start_timestamp: string;
   end_timestamp: string;
-  sampling_step: number;
+  sampling_step?: number;
 }
+
+export async function createHistoricalReplay(req: HistoricalReplayRequest): Promise<{ run_id: string; status: string; is_reused: boolean; run: any }> {
+  const res = await apiFetch("/api/v1/replays", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json();
+    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    throw new Error(message || "Historical replay creation failed");
+  }
+  return res.json();
+}
+
+export const executeHistoricalReplay = createHistoricalReplay;
 
 export interface InspectionRunSummaryResponse {
   id: string;
@@ -382,6 +522,8 @@ export interface InspectionRunSummaryResponse {
   is_exact_match: boolean;
 }
 
+export type InspectionRunListItem = InspectionRunSummaryResponse;
+
 export interface PaginatedInspectionRunList {
   items: InspectionRunSummaryResponse[];
   total: number;
@@ -390,20 +532,7 @@ export interface PaginatedInspectionRunList {
   total_pages: number;
 }
 
-export async function createHistoricalReplay(req: HistoricalReplayRequest): Promise<{ run_id: string; status: string; is_reused: boolean; run: any }> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/replays`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
-
-  if (!res.ok) {
-    const errData = await res.json();
-    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
-    throw new Error(message || "Historical replay creation failed");
-  }
-  return res.json();
-}
+export type InspectionHistoryResponse = PaginatedInspectionRunList;
 
 export async function listInspectionRuns(params: {
   page?: number;
@@ -423,13 +552,30 @@ export async function listInspectionRuns(params: {
   if (params.start_date) query.set("start_date", params.start_date);
   if (params.end_date) query.set("end_date", params.end_date);
 
-  const res = await fetch(`${API_BASE_URL}/api/v1/replays?${query.toString()}`);
+  const res = await apiFetch(`/api/v1/replays?${query.toString()}`);
   if (!res.ok) throw new Error("Failed to fetch inspection runs list");
-  return res.json();
+  const data = await res.json();
+  const page_size = data.page_size || params.page_size || 20;
+  return {
+    items: (data.items || []).map((item: any) => ({
+      ...item,
+      subject_dataset_ids: item.subject_dataset_ids || [],
+      is_exact_match: item.is_exact_match ?? true,
+      synthetic_data_confirmed: item.synthetic_data_confirmed ?? true,
+    })),
+    total: data.total || 0,
+    page: data.page || params.page || 1,
+    page_size: page_size,
+    total_pages: data.total_pages || Math.ceil((data.total || 0) / page_size) || 1,
+  };
+}
+
+export async function fetchInspectionHistory(page = 1, pageSize = 20, status?: string): Promise<InspectionHistoryResponse> {
+  return listInspectionRuns({ page, page_size: pageSize, status });
 }
 
 export async function getInspectionRunDetail(runId: string): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/replays/${runId}`);
+  const res = await apiFetch(`/api/v1/replays/${runId}`);
   if (!res.ok) {
     const errData = await res.json();
     throw new Error(errData.detail || `Failed to fetch run '${runId}'`);
@@ -437,8 +583,10 @@ export async function getInspectionRunDetail(runId: string): Promise<any> {
   return res.json();
 }
 
+export const fetchInspectionRunDetail = getInspectionRunDetail;
+
 export async function getInspectionRunReproducibility(runId: string): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/replays/${runId}/reproducibility`);
+  const res = await apiFetch(`/api/v1/replays/${runId}/reproducibility`);
   if (!res.ok) throw new Error("Failed to fetch reproducibility status");
   return res.json();
 }
@@ -483,6 +631,8 @@ export interface ReplayVerificationResult {
   reasons: string[];
 }
 
+export type VerificationResult = ReplayVerificationResult;
+
 export interface ReplayComparisonRequest {
   baseline_run_id: string;
   comparison_run_id: string;
@@ -521,8 +671,10 @@ export interface ReplayComparisonResult {
   warnings: string[];
 }
 
+export type ReplayComparisonResponse = ReplayComparisonResult;
+
 export async function verifyReplayRun(runId: string): Promise<ReplayVerificationResult> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/replays/${runId}/verify`);
+  const res = await apiFetch(`/api/v1/replays/${runId}/verify`);
   if (!res.ok) {
     const errData = await res.json();
     throw new Error(errData.detail || `Failed to verify run '${runId}'`);
@@ -530,11 +682,18 @@ export async function verifyReplayRun(runId: string): Promise<ReplayVerification
   return res.json();
 }
 
-export async function compareReplays(req: ReplayComparisonRequest): Promise<ReplayComparisonResult> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/replays/compare`, {
+export async function compareReplays(
+  reqOrBaseline: ReplayComparisonRequest | string,
+  comparisonRunId?: string,
+  includeUnchanged = false
+): Promise<ReplayComparisonResult> {
+  const body = typeof reqOrBaseline === "string"
+    ? { baseline_run_id: reqOrBaseline, comparison_run_id: comparisonRunId, include_unchanged: includeUnchanged }
+    : reqOrBaseline;
+
+  const res = await apiFetch("/api/v1/replays/compare", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const errData = await res.json();
@@ -648,7 +807,7 @@ export interface DatasetAuditBatchResponse {
 }
 
 export async function fetchDatasetQualitySummaries(): Promise<DatasetQualityListItem[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/data-quality/datasets`);
+  const res = await apiFetch("/api/v1/data-quality/datasets");
   if (!res.ok) {
     const errData = await res.json();
     throw new Error(errData.detail || "Failed to fetch dataset quality summaries");
@@ -657,7 +816,7 @@ export async function fetchDatasetQualitySummaries(): Promise<DatasetQualityList
 }
 
 export async function fetchDatasetQualityReport(datasetId: string): Promise<DatasetQualityReport> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/data-quality/datasets/${datasetId}`);
+  const res = await apiFetch(`/api/v1/data-quality/datasets/${datasetId}`);
   if (!res.ok) {
     const errData = await res.json();
     throw new Error(errData.detail || `Failed to fetch quality report for dataset '${datasetId}'`);
@@ -666,9 +825,8 @@ export async function fetchDatasetQualityReport(datasetId: string): Promise<Data
 }
 
 export async function auditDatasetsBatch(datasetIds: string[]): Promise<DatasetAuditBatchResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/data-quality/audit`, {
+  const res = await apiFetch("/api/v1/data-quality/audit", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dataset_ids: datasetIds }),
   });
   if (!res.ok) {

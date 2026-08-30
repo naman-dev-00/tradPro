@@ -35,6 +35,7 @@ def test_sanitize_filename_prevents_path_traversal():
 def test_generate_json_export_structure(session):
 
     run = InspectionRun(
+        owner_id="00000000-0000-0000-0000-000000000000",
         id="597a9957-ed19-6a5c-70f1-a6f631b30507",
         status="COMPLETED",
         run_type="HISTORICAL_REPLAY",
@@ -70,6 +71,7 @@ def test_generate_json_export_structure(session):
 def test_generate_csv_export_structure(session):
 
     run = InspectionRun(
+        owner_id="00000000-0000-0000-0000-000000000000",
         id="88888888-4444-4444-4444-1234567890ab",
         status="COMPLETED",
         run_type="HISTORICAL_REPLAY",

@@ -3,9 +3,10 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from src.database import get_db
-from src.models import Strategy
+from src.models import Strategy, User
 from src.schemas import StrategyBase, StrategyCreate, StrategyResponse
 from src.validation import validate_strategy_rules
+from src.auth.dependencies import get_current_user, require_roles, require_csrf
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -30,7 +31,12 @@ def validate_strategy(payload: dict):
     }
 
 @router.post("", response_model=StrategyResponse, status_code=status.HTTP_201_CREATED)
-def create_strategy(payload: dict, db: Session = Depends(get_db)):
+def create_strategy(
+    payload: dict,
+    current_user: User = Depends(require_roles("EDITOR", "ADMIN")),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db)
+):
     # Validate payload
     validation_res = validate_strategy(payload)
     if not validation_res["valid"]:
@@ -59,6 +65,7 @@ def create_strategy(payload: dict, db: Session = Depends(get_db)):
 
     db_strategy = Strategy(
         id=strategy_id,
+        owner_id=current_user.id,
         name=strategy_data.name,
         description=strategy_data.description,
         timeframe=strategy_data.timeframe,
@@ -70,18 +77,28 @@ def create_strategy(payload: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_strategy)
 
-    # Return structured strategy
     return db_strategy
 
 @router.get("", response_model=List[StrategyResponse])
-def list_strategies(db: Session = Depends(get_db)):
-    strategies = db.query(Strategy).all()
+def list_strategies(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Strictly return only strategies owned by current user
+    strategies = db.query(Strategy).filter(
+        Strategy.owner_id == current_user.id
+    ).order_by(Strategy.created_at.desc()).all()
     return strategies
 
 @router.get("/{id}", response_model=StrategyResponse)
-def get_strategy(id: str, db: Session = Depends(get_db)):
+def get_strategy(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     db_strategy = db.query(Strategy).filter(Strategy.id == id).first()
-    if not db_strategy:
+    # Security requirement: Always return 404 for unowned resources to never leak existence
+    if not db_strategy or db_strategy.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Strategy with ID '{id}' not found."
@@ -89,9 +106,16 @@ def get_strategy(id: str, db: Session = Depends(get_db)):
     return db_strategy
 
 @router.put("/{id}", response_model=StrategyResponse)
-def update_strategy(id: str, payload: dict, db: Session = Depends(get_db)):
+def update_strategy(
+    id: str,
+    payload: dict,
+    current_user: User = Depends(require_roles("EDITOR", "ADMIN")),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db)
+):
     db_strategy = db.query(Strategy).filter(Strategy.id == id).first()
-    if not db_strategy:
+    # Security requirement: Always return 404 for unowned resources to never leak existence
+    if not db_strategy or db_strategy.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Strategy with ID '{id}' not found."

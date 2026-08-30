@@ -18,6 +18,7 @@ import {
   Layers,
   PlayCircle,
 } from "lucide-react";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 
 export function InspectionHistory() {
   const searchParams = useSearchParams();
@@ -104,6 +105,7 @@ export function InspectionHistory() {
             <Layers className="h-4 w-4 text-emerald-400" />
             <span>Multi-Series Lab</span>
           </Link>
+          <AuthHeaderBadge />
         </div>
       </div>
 

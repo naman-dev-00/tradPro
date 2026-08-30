@@ -4,8 +4,7 @@ from src.models import InspectionRun
 from src.engine.fingerprint import compute_request_fingerprint
 from src.engine.manifest import get_manifest_checksums_snapshot
 
-def test_api_verify_replay_run_success(client, session):
-
+def test_api_verify_replay_run_success(client, session, test_user):
     checksums = get_manifest_checksums_snapshot()
     strat_dict = {"name": "API Test Strat"}
     start = datetime(2026, 8, 28, 9, 15, tzinfo=timezone.utc)
@@ -16,6 +15,7 @@ def test_api_verify_replay_run_success(client, session):
     fp = compute_request_fingerprint(strat_dict, ref, subjs, start, end, 1)
 
     run = InspectionRun(
+        owner_id=test_user.id,
         id="run-api-verify-1",
         status="COMPLETED",
         run_type="HISTORICAL_REPLAY",
@@ -39,7 +39,6 @@ def test_api_verify_replay_run_success(client, session):
     session.add(run)
     session.commit()
 
-
     resp = client.get("/api/v1/replays/run-api-verify-1/verify")
     assert resp.status_code == 200
     data = resp.json()
@@ -52,8 +51,7 @@ def test_api_verify_replay_run_not_found(client):
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"]
 
-def test_api_compare_replays_success(client, session):
-
+def test_api_compare_replays_success(client, session, test_user):
     checksums = get_manifest_checksums_snapshot()
     strat_dict = {"name": "API Test Strat"}
     start = datetime(2026, 8, 28, 9, 15, tzinfo=timezone.utc)
@@ -62,6 +60,7 @@ def test_api_compare_replays_success(client, session):
     subjs = ["synthetic_candidate_option_ce_23000_15m"]
 
     run1 = InspectionRun(
+        owner_id=test_user.id,
         id="run-cmp-base",
         status="COMPLETED",
         run_type="HISTORICAL_REPLAY",
@@ -91,8 +90,8 @@ def test_api_compare_replays_success(client, session):
         synthetic_data_confirmed=True,
     )
 
-
     run2 = InspectionRun(
+        owner_id=test_user.id,
         id="run-cmp-target",
         status="COMPLETED",
         run_type="HISTORICAL_REPLAY",
@@ -122,10 +121,8 @@ def test_api_compare_replays_success(client, session):
         synthetic_data_confirmed=True,
     )
 
-
     session.add_all([run1, run2])
     session.commit()
-
 
     payload = {
         "baseline_run_id": "run-cmp-base",
@@ -148,7 +145,7 @@ def test_api_compare_replays_extra_fields_forbidden(client):
         "forbidden_extra_field": "hacked",
     }
     resp = client.post("/api/v1/replays/compare", json=payload)
-    assert resp.status_code == 422  # Unprocessable Entity for extra forbid schema validation
+    assert resp.status_code == 422
 
 def test_api_compare_same_run_rejected(client):
     payload = {
@@ -159,9 +156,9 @@ def test_api_compare_same_run_rejected(client):
     assert resp.status_code == 400
     assert "Cannot compare" in resp.json()["detail"]
 
-def test_api_export_query_format(client, session):
-
+def test_api_export_query_format(client, session, test_user):
     run = InspectionRun(
+        owner_id=test_user.id,
         id="run-export-fmt-1",
         status="COMPLETED",
         run_type="HISTORICAL_REPLAY",
@@ -184,7 +181,6 @@ def test_api_export_query_format(client, session):
 
     session.add(run)
     session.commit()
-
 
     resp_json = client.get("/api/v1/replays/run-export-fmt-1/export?format=json")
     assert resp_json.status_code == 200

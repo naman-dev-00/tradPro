@@ -3,12 +3,12 @@ import csv
 import json
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy.orm import Session
 from src.database import get_db
-from src.models import InspectionRun, Strategy
+from src.models import InspectionRun, Strategy, User
 from src.services.persistence_service import PersistenceService
 from src.engine.manifest import compare_manifest_checksums
 from src.engine.multi_series_models import ensure_utc_datetime
@@ -18,11 +18,11 @@ from src.engine.replay_comparison_models import (
     ReplayComparisonResult,
 )
 from src.engine.replay_comparison_engine import ReplayComparisonEngine
-from src.services.export_service import ExportService
+from src.services.export_service import ExportService, sanitize_csv_cell
+from src.auth.dependencies import get_current_user, require_roles, require_csrf
+from src.auth.rate_limiter import rate_limiter, get_client_ip
 
 router = APIRouter(prefix="/api/v1/replays", tags=["Historical Replays & Persistence"])
-
-
 
 class HistoricalReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -69,23 +69,23 @@ class PaginatedInspectionRunList(BaseModel):
     page_size: int
     total_pages: int
 
-def sanitize_csv_cell(value: Any) -> str:
-    val_str = str(value) if value is not None else ""
-    stripped = val_str.lstrip()
-    if stripped and stripped[0] in ("=", "+", "-", "@"):
-        return "'" + val_str
-    return val_str
-
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_historical_replay(
     req: HistoricalReplayRequest,
+    request: Request,
     response: Response,
+    current_user: User = Depends(require_roles("EDITOR", "ADMIN")),
+    _csrf: None = Depends(require_csrf),
     db: Session = Depends(get_db),
 ):
+    ip = get_client_ip(request)
+    rate_limiter.check_rate_limit(f"replay_run:{ip}", max_requests=15, window_seconds=60)
+
     strategy_dict = req.strategy_payload
     if not strategy_dict and req.strategy_id:
         strat = db.query(Strategy).filter(Strategy.id == req.strategy_id).first()
-        if not strat:
+        # Security requirement: 404 if unowned
+        if not strat or strat.owner_id != current_user.id:
             raise HTTPException(status_code=404, detail=f"Strategy with ID '{req.strategy_id}' not found.")
         strategy_dict = strat.payload
 
@@ -98,6 +98,7 @@ def create_historical_replay(
     try:
         run, is_reused = PersistenceService.execute_or_reuse_historical_replay(
             db=db,
+            owner_id=current_user.id,
             strategy_payload=strategy_dict,
             reference_dataset_id=req.reference_dataset_id,
             subject_dataset_ids=req.subject_dataset_ids,
@@ -144,9 +145,11 @@ def list_inspection_runs(
     run_type: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(InspectionRun)
+    # Strictly filter inspection runs by current_user.id
+    query = db.query(InspectionRun).filter(InspectionRun.owner_id == current_user.id)
 
     if strategy_id:
         query = query.filter(InspectionRun.strategy_id == strategy_id)
@@ -210,9 +213,14 @@ def list_inspection_runs(
     )
 
 @router.get("/{run_id}")
-def get_inspection_run_detail(run_id: str, db: Session = Depends(get_db)):
+def get_inspection_run_detail(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
-    if not run:
+    # Security requirement: Always return 404 for unowned resources
+    if not run or run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
 
     repro = compare_manifest_checksums(run.manifest_checksums_snapshot)
@@ -242,9 +250,13 @@ def get_inspection_run_detail(run_id: str, db: Session = Depends(get_db)):
     }
 
 @router.get("/{run_id}/reproducibility")
-def get_inspection_run_reproducibility(run_id: str, db: Session = Depends(get_db)):
+def get_inspection_run_reproducibility(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
-    if not run:
+    if not run or run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
 
     repro = compare_manifest_checksums(run.manifest_checksums_snapshot)
@@ -257,9 +269,13 @@ def get_inspection_run_reproducibility(run_id: str, db: Session = Depends(get_db
     }
 
 @router.get("/{run_id}/verify", response_model=ReplayVerificationResult)
-def verify_inspection_run(run_id: str, db: Session = Depends(get_db)):
+def verify_inspection_run(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
-    if not run:
+    if not run or run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
     try:
         return ReplayComparisonEngine.verify_run(run)
@@ -271,17 +287,22 @@ def verify_inspection_run(run_id: str, db: Session = Depends(get_db)):
 @router.post("/compare", response_model=ReplayComparisonResult)
 def compare_historical_replays(
     req: ReplayComparisonRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    ip = get_client_ip(request)
+    rate_limiter.check_rate_limit(f"replay_compare:{ip}", max_requests=30, window_seconds=60)
+
     if req.baseline_run_id == req.comparison_run_id:
         raise HTTPException(status_code=400, detail="Cannot compare a historical replay run with itself.")
 
     baseline_run = db.query(InspectionRun).filter(InspectionRun.id == req.baseline_run_id).first()
-    if not baseline_run:
+    if not baseline_run or baseline_run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Baseline inspection run with ID '{req.baseline_run_id}' not found.")
 
     comparison_run = db.query(InspectionRun).filter(InspectionRun.id == req.comparison_run_id).first()
-    if not comparison_run:
+    if not comparison_run or comparison_run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Comparison inspection run with ID '{req.comparison_run_id}' not found.")
 
     try:
@@ -298,15 +319,20 @@ def compare_historical_replays(
 @router.get("/{run_id}/export")
 def export_inspection_run(
     run_id: str,
+    request: Request,
     format: str = Query("json"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    ip = get_client_ip(request)
+    rate_limiter.check_rate_limit(f"replay_export:{ip}", max_requests=30, window_seconds=60)
+
     fmt = format.lower().strip()
     if fmt not in ("json", "csv"):
         raise HTTPException(status_code=400, detail="Export format must be either 'json' or 'csv'.")
 
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
-    if not run:
+    if not run or run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
 
     if fmt == "csv":
@@ -314,15 +340,31 @@ def export_inspection_run(
     return ExportService.generate_json_export(run)
 
 @router.get("/{run_id}/export.json")
-def export_inspection_run_json(run_id: str, db: Session = Depends(get_db)):
+def export_inspection_run_json(
+    run_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    ip = get_client_ip(request)
+    rate_limiter.check_rate_limit(f"replay_export:{ip}", max_requests=30, window_seconds=60)
+
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
-    if not run:
+    if not run or run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
     return ExportService.generate_json_export(run)
 
 @router.get("/{run_id}/export.csv")
-def export_inspection_run_csv(run_id: str, db: Session = Depends(get_db)):
+def export_inspection_run_csv(
+    run_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    ip = get_client_ip(request)
+    rate_limiter.check_rate_limit(f"replay_export:{ip}", max_requests=30, window_seconds=60)
+
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
-    if not run:
+    if not run or run.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
     return ExportService.generate_csv_export(run)
