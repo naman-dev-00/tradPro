@@ -190,8 +190,15 @@ export function ReplayComparisonLab() {
             <Layers className="w-3.5 h-3.5" />
             <span>Multi-Series Lab</span>
           </Link>
+          <Link
+            href="/data-quality-lab"
+            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-emerald-400 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition-colors focus:outline-none focus:ring-1 focus:ring-emerald-500"
+          >
+            <span>Data Quality Lab</span>
+          </Link>
         </nav>
       </header>
+
 
       {/* Educational Notice Banner */}
       <EducationalNotice />

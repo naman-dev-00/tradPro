@@ -213,13 +213,14 @@ export const MultiSeriesLabWorkspace: React.FC = () => {
             <span>Historical Replay Lab</span>
           </Link>
           <Link
-            href="/inspection-history"
-            className="inline-flex items-center space-x-1.5 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+            href="/data-quality-lab"
+            className="inline-flex items-center space-x-1.5 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition-colors hover:bg-slate-700"
           >
-            <span>Inspection History</span>
+            <span>Data Quality Lab</span>
           </Link>
         </div>
       </header>
+
 
 
       <EducationalNotice />

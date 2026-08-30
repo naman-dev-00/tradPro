@@ -4,14 +4,19 @@
 
 TradePro is an educational options strategy-building, indicator analysis, rule evaluation workspace, historical replay, and deterministic comparison lab.
 
-This repository covers **Milestone 1**, **Milestone 2A**, **Milestone 2B**, **Milestone 3**, **Milestone 4A**, and **Milestone 4B (Deterministic Replay Comparison, Reproducibility Verification & Educational Exports)**.
+This repository covers **Milestone 1**, **Milestone 2A**, **Milestone 2B**, **Milestone 3**, **Milestone 4A**, **Milestone 4B**, and **Milestone 5A (Synthetic Dataset Quality, Provenance & Diagnostics Lab)**.
 
 ### Documentation
-- [Architecture & Alignment Specs](docs/architecture_replay_comparison.md)
+- [Dataset Quality Diagnostics & Rules](docs/dataset_quality_rules.md)
+- [Dataset Provenance & Checksums](docs/dataset_provenance.md)
+- [Observability & Request-ID Security](docs/observability_and_request_ids.md)
+- [Architecture & Diagnostics Engine](docs/architecture_data_quality.md)
+- [Historical Replay & Comparison Specs](docs/architecture_replay_comparison.md)
 - [Reproducibility Verification Matrix](docs/replay_verification.md)
 - [Educational Exports & Formula Protection](docs/educational_exports.md)
 
 ---
+
 
 
 ## Repository Structure

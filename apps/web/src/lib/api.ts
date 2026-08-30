@@ -543,3 +543,142 @@ export async function compareReplays(req: ReplayComparisonRequest): Promise<Repl
   }
   return res.json();
 }
+
+// Milestone 5A: Dataset Quality & Diagnostics Interfaces
+
+export type DatasetQualityStatus = "PASS" | "WARN" | "FAIL";
+export type DatasetIssueSeverity = "INFO" | "WARNING" | "ERROR";
+
+export type DatasetIssueCode =
+  | "FILE_UNAVAILABLE"
+  | "CSV_HEADER_INVALID"
+  | "ROW_MALFORMED"
+  | "TIMESTAMP_INVALID"
+  | "TIMESTAMP_NOT_UTC"
+  | "TIMESTAMP_OUT_OF_ORDER"
+  | "DUPLICATE_TIMESTAMP"
+  | "TIMEFRAME_UNSUPPORTED"
+  | "TIMEFRAME_INTERVAL_MISMATCH"
+  | "MISSING_INTERVAL"
+  | "INSTRUMENT_ID_MISMATCH"
+  | "TIMEFRAME_VALUE_MISMATCH"
+  | "NON_FINITE_VALUE"
+  | "NEGATIVE_PRICE"
+  | "NEGATIVE_VOLUME"
+  | "OHLC_HIGH_BOUND_INVALID"
+  | "OHLC_LOW_BOUND_INVALID"
+  | "INCOMPLETE_CANDLE_PRESENT"
+  | "MANIFEST_COUNT_MISMATCH"
+  | "COMPLETED_COUNT_MISMATCH"
+  | "CHECKSUM_MISMATCH"
+  | "MANIFEST_METADATA_MISMATCH"
+  | "INSUFFICIENT_DATA_FOR_WARMUP"
+  | "DATASET_ROW_LIMIT_EXCEEDED";
+
+export interface DatasetQualityIssue {
+  code: DatasetIssueCode;
+  severity: DatasetIssueSeverity;
+  message: string;
+  row_number?: number | null;
+  timestamp?: string | null;
+  field?: string | null;
+  expected?: string | null;
+  actual?: string | null;
+}
+
+export interface DatasetQualitySummary {
+  total_rows: number;
+  valid_rows: number;
+  malformed_rows: number;
+  completed_rows: number;
+  incomplete_rows: number;
+  duplicate_timestamp_count: number;
+  missing_interval_count: number;
+  first_timestamp?: string | null;
+  last_timestamp?: string | null;
+  expected_interval_seconds?: number | null;
+  calculated_checksum?: string | null;
+  manifest_checksum?: string | null;
+  checksum_matches?: boolean | null;
+}
+
+export interface DatasetProvenance {
+  dataset_id: string;
+  display_name: string;
+  category: "REFERENCE" | "SUBJECT";
+  instrument_id: string;
+  timeframe: string;
+  is_synthetic: true;
+  manifest_version: string;
+  fixture_checksum?: string | null;
+  source_type: "PACKAGED_SYNTHETIC_FIXTURE";
+  immutable: true;
+}
+
+export interface DatasetQualityReport {
+  dataset_id: string;
+  status: DatasetQualityStatus;
+  provenance: DatasetProvenance;
+  summary: DatasetQualitySummary;
+  issues: DatasetQualityIssue[];
+  total_issue_count: number;
+  reported_issue_count: number;
+  issues_truncated: boolean;
+  audit_rules_version: string;
+  warnings: string[];
+}
+
+export interface DatasetQualityListItem {
+  dataset_id: string;
+  display_name: string;
+  category: "REFERENCE" | "SUBJECT";
+  instrument_id: string;
+  timeframe: string;
+  status: DatasetQualityStatus;
+  summary: DatasetQualitySummary;
+  provenance: DatasetProvenance;
+}
+
+export interface DatasetAuditBatchResponse {
+  reports: DatasetQualityReport[];
+  status_counts: Record<"PASS" | "WARN" | "FAIL", number>;
+  total_datasets: number;
+  audit_rules_version: string;
+  warnings: string[];
+}
+
+export async function fetchDatasetQualitySummaries(): Promise<DatasetQualityListItem[]> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/data-quality/datasets`);
+  if (!res.ok) {
+    const errData = await res.json();
+    throw new Error(errData.detail || "Failed to fetch dataset quality summaries");
+  }
+  return res.json();
+}
+
+export async function fetchDatasetQualityReport(datasetId: string): Promise<DatasetQualityReport> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/data-quality/datasets/${datasetId}`);
+  if (!res.ok) {
+    const errData = await res.json();
+    throw new Error(errData.detail || `Failed to fetch quality report for dataset '${datasetId}'`);
+  }
+  return res.json();
+}
+
+export async function auditDatasetsBatch(datasetIds: string[]): Promise<DatasetAuditBatchResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/data-quality/audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset_ids: datasetIds }),
+  });
+  if (!res.ok) {
+    const errData = await res.json();
+    const message = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+    throw new Error(message || "Failed to run batch dataset audit");
+  }
+  return res.json();
+}
+
+export function getDataQualityExportUrl(datasetId: string): string {
+  return `${API_BASE_URL}/api/v1/data-quality/datasets/${datasetId}/export`;
+}

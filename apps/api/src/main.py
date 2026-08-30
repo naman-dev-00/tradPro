@@ -2,7 +2,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.database import Base, engine, verify_database_connection
-from src.routes import health, strategies, indicators, rules, multi_series, replays
+from src.middleware.observability import ObservabilityMiddleware
+from src.routes import health, strategies, indicators, rules, multi_series, replays, data_quality
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,6 +29,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Enable Request-ID and Observability Logging Middleware
+app.add_middleware(ObservabilityMiddleware)
+
 # Include routers
 app.include_router(health.router)
 app.include_router(strategies.router)
@@ -35,6 +39,8 @@ app.include_router(indicators.router)
 app.include_router(rules.rules_router)
 app.include_router(multi_series.router)
 app.include_router(replays.router)
+app.include_router(data_quality.router)
+
 
 @app.get("/")
 def read_root():
