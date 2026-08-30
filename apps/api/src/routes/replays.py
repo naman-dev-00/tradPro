@@ -12,8 +12,17 @@ from src.models import InspectionRun, Strategy
 from src.services.persistence_service import PersistenceService
 from src.engine.manifest import compare_manifest_checksums
 from src.engine.multi_series_models import ensure_utc_datetime
+from src.engine.replay_comparison_models import (
+    ReplayVerificationResult,
+    ReplayComparisonRequest,
+    ReplayComparisonResult,
+)
+from src.engine.replay_comparison_engine import ReplayComparisonEngine
+from src.services.export_service import ExportService
 
 router = APIRouter(prefix="/api/v1/replays", tags=["Historical Replays & Persistence"])
+
+
 
 class HistoricalReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -247,67 +256,73 @@ def get_inspection_run_reproducibility(run_id: str, db: Session = Depends(get_db
         "stored_checksums": run.manifest_checksums_snapshot,
     }
 
+@router.get("/{run_id}/verify", response_model=ReplayVerificationResult)
+def verify_inspection_run(run_id: str, db: Session = Depends(get_db)):
+    run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
+    try:
+        return ReplayComparisonEngine.verify_run(run)
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Verification processing failed.")
+
+@router.post("/compare", response_model=ReplayComparisonResult)
+def compare_historical_replays(
+    req: ReplayComparisonRequest,
+    db: Session = Depends(get_db),
+):
+    if req.baseline_run_id == req.comparison_run_id:
+        raise HTTPException(status_code=400, detail="Cannot compare a historical replay run with itself.")
+
+    baseline_run = db.query(InspectionRun).filter(InspectionRun.id == req.baseline_run_id).first()
+    if not baseline_run:
+        raise HTTPException(status_code=404, detail=f"Baseline inspection run with ID '{req.baseline_run_id}' not found.")
+
+    comparison_run = db.query(InspectionRun).filter(InspectionRun.id == req.comparison_run_id).first()
+    if not comparison_run:
+        raise HTTPException(status_code=404, detail=f"Comparison inspection run with ID '{req.comparison_run_id}' not found.")
+
+    try:
+        return ReplayComparisonEngine.compare_runs(
+            baseline_run=baseline_run,
+            comparison_run=comparison_run,
+            include_unchanged=req.include_unchanged,
+        )
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail="Replay comparison failed.")
+
+@router.get("/{run_id}/export")
+def export_inspection_run(
+    run_id: str,
+    format: str = Query("json"),
+    db: Session = Depends(get_db),
+):
+    fmt = format.lower().strip()
+    if fmt not in ("json", "csv"):
+        raise HTTPException(status_code=400, detail="Export format must be either 'json' or 'csv'.")
+
+    run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
+
+    if fmt == "csv":
+        return ExportService.generate_csv_export(run)
+    return ExportService.generate_json_export(run)
+
 @router.get("/{run_id}/export.json")
 def export_inspection_run_json(run_id: str, db: Session = Depends(get_db)):
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
-
-    export_data = {
-        "run_id": run.id,
-        "strategy_id": run.strategy_id,
-        "strategy_snapshot": run.strategy_definition_snapshot,
-        "run_type": run.run_type,
-        "reference_dataset_id": run.reference_dataset_id,
-        "subject_dataset_ids": run.subject_dataset_ids,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        "status": run.status,
-        "result_summary": run.result_summary,
-        "result_payload": run.result_payload,
-    }
-
-    json_str = json.dumps(export_data, indent=2)
-    filename = f"replay_{run.id}.json"
-
-    return Response(
-        content=json_str,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return ExportService.generate_json_export(run)
 
 @router.get("/{run_id}/export.csv")
 def export_inspection_run_csv(run_id: str, db: Session = Depends(get_db)):
     run = db.query(InspectionRun).filter(InspectionRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail=f"Inspection run with ID '{run_id}' not found.")
-
-    if not run.result_payload or "replay_points" not in run.result_payload:
-        raise HTTPException(status_code=400, detail="Run does not contain historical replay point results for CSV export.")
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Header
-    writer.writerow(["evaluation_timestamp", "dataset_id", "status"])
-
-    for point in run.result_payload["replay_points"]:
-        eval_ts = point.get("evaluation_timestamp", "")
-        for res in point.get("results", []):
-            ds_id = res.get("dataset_id", "")
-            status_val = res.get("status", "")
-
-            writer.writerow([
-                sanitize_csv_cell(eval_ts),
-                sanitize_csv_cell(ds_id),
-                sanitize_csv_cell(status_val),
-            ])
-
-    filename = f"replay_{run.id}.csv"
-    csv_bytes = output.getvalue().encode("utf-8")
-
-    return Response(
-        content=csv_bytes,
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return ExportService.generate_csv_export(run)

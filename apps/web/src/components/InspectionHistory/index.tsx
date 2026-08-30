@@ -208,7 +208,15 @@ export function InspectionHistory() {
                     <td className="px-4 py-3 text-slate-400">
                       {new Date(item.created_at).toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right space-x-3">
+                      {item.status === "COMPLETED" && (
+                        <Link
+                          href={`/replay-comparison-lab?baseline=${item.id}`}
+                          className="inline-flex items-center space-x-1 text-sky-400 hover:text-sky-300 font-medium"
+                        >
+                          <span>Compare</span>
+                        </Link>
+                      )}
                       <Link
                         href={`/historical-replay-lab?run_id=${item.id}`}
                         className="inline-flex items-center space-x-1 text-cyan-400 hover:text-cyan-300 font-medium"
@@ -217,6 +225,7 @@ export function InspectionHistory() {
                         <ExternalLink className="h-3 w-3" />
                       </Link>
                     </td>
+
                   </tr>
                 ))
               )}

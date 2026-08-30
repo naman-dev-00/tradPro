@@ -69,3 +69,11 @@ class StrategyResponse(StrategyBase):
 
     model_config = ConfigDict(from_attributes=True)
 DefinitionRef = Any
+
+from src.engine.replay_comparison_models import (
+    DatasetChecksumResult,
+    ReplayVerificationResult,
+    ReplayComparisonRequest,
+    ReplayStatusDifference,
+    ReplayComparisonResult,
+)
