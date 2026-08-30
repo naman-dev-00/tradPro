@@ -55,10 +55,10 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
   };
 
   return (
-    <div className="p-5 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 pb-4 border-b border-slate-800">
-        <div>
-          <h3 className="font-semibold text-slate-100 text-base">
+    <div className="p-4 sm:p-5 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg min-w-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 pb-4 border-b border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <h3 className="font-semibold text-slate-100 text-base truncate">
             Detailed Inspection Differences
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -67,10 +67,10 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
         </div>
 
         {/* Filters */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center space-x-2">
-            <Filter className="w-3.5 h-3.5 text-slate-400" />
-            <span className="text-xs text-slate-400 font-medium">Filter State:</span>
+        <div className="flex flex-wrap items-center gap-3 min-w-0">
+          <div className="flex items-center space-x-2 min-w-0">
+            <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span className="text-xs text-slate-400 font-medium shrink-0">Filter State:</span>
             <select
               value={filterChanged}
               onChange={(e) => {
@@ -78,7 +78,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
                 setCurrentPage(1);
               }}
               aria-label="Filter by changed state"
-              className="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              className="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-sky-500 max-w-full"
             >
               <option value="ALL">All Points</option>
               <option value="CHANGED_ONLY">Changed Only</option>
@@ -86,8 +86,8 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
             </select>
           </div>
 
-          <div className="flex items-center space-x-2">
-            <span className="text-xs text-slate-400 font-medium">Status:</span>
+          <div className="flex items-center space-x-2 min-w-0">
+            <span className="text-xs text-slate-400 font-medium shrink-0">Status:</span>
             <select
               value={filterStatus}
               onChange={(e) => {
@@ -95,7 +95,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
                 setCurrentPage(1);
               }}
               aria-label="Filter by status"
-              className="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              className="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-sky-500 max-w-full"
             >
               <option value="ALL">All Statuses</option>
               <option value="TRUE">TRUE</option>
@@ -107,6 +107,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
           </div>
         </div>
       </div>
+
 
       {filteredDifferences.length === 0 ? (
         <div className="py-12 text-center text-slate-400 text-sm">
@@ -257,7 +258,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
 
           {/* Pagination Controls */}
           {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400 min-w-0">
               <span>
                 Page {currentPage} of {totalPages}
               </span>
@@ -266,7 +267,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
                   type="button"
                   disabled={currentPage === 1}
                   onClick={() => setCurrentPage(currentPage - 1)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 rounded flex items-center space-x-1"
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 rounded flex items-center space-x-1 focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
                   <span>Previous</span>
@@ -275,7 +276,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
                   type="button"
                   disabled={currentPage === totalPages}
                   onClick={() => setCurrentPage(currentPage + 1)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 rounded flex items-center space-x-1"
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 rounded flex items-center space-x-1 focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
                   <span>Next</span>
                   <ArrowRight className="w-3.5 h-3.5" />
@@ -283,6 +284,7 @@ export const DifferenceTable: React.FC<DifferenceTableProps> = ({
               </div>
             </div>
           )}
+
         </>
       )}
     </div>
