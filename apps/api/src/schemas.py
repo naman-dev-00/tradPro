@@ -77,3 +77,15 @@ from src.engine.replay_comparison_models import (
     ReplayStatusDifference,
     ReplayComparisonResult,
 )
+from src.engine.dataset_quality_models import (
+    DatasetQualityStatus,
+    DatasetIssueSeverity,
+    DatasetIssueCode,
+    DatasetQualityIssue,
+    DatasetQualitySummary,
+    DatasetProvenance,
+    DatasetQualityReport,
+    DatasetAuditBatchRequest,
+    DatasetAuditBatchResponse,
+    DatasetQualityListItem,
+)

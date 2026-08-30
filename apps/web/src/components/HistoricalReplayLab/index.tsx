@@ -17,7 +17,7 @@ import {
   Play,
   Loader2,
   AlertCircle,
-  Layers,
+  ShieldCheck,
   ChevronDown,
   ChevronUp,
   FileSpreadsheet,
@@ -26,6 +26,7 @@ import {
   History,
   GitCompare,
 } from "lucide-react";
+
 
 
 export function HistoricalReplayLab() {
@@ -181,13 +182,14 @@ export function HistoricalReplayLab() {
             <span>Inspection History</span>
           </Link>
           <Link
-            href="/multi-series-lab"
+            href="/data-quality-lab"
             className="inline-flex items-center space-x-2 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
           >
-            <Layers className="h-4 w-4 text-cyan-400" />
-            <span>Multi-Series Lab</span>
+            <ShieldCheck className="h-4 w-4 text-emerald-400" />
+            <span>Data Quality</span>
           </Link>
         </div>
+
 
       </div>
 
