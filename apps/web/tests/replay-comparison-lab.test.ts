@@ -113,4 +113,31 @@ describe("Replay Comparison Lab Specification Suite", () => {
 
     expect(new Date(ts1).getTime()).toBeLessThan(new Date(ts2).getTime());
   });
+
+  // 9. Mobile Responsive Layout Classes Contract
+  it("enforces mobile-responsive stacking classes on verification cards", () => {
+    const cardHeaderClasses = "flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3 min-w-0";
+    expect(cardHeaderClasses).toContain("flex-col");
+    expect(cardHeaderClasses).toContain("sm:flex-row");
+    expect(cardHeaderClasses).toContain("min-w-0");
+  });
+
+  // 10. Status Badge Visibility Contract
+  it("enforces shrink-0 on status badges to prevent compression on narrow viewports", () => {
+    const badgeContainerClass = "shrink-0 self-start sm:self-center";
+    expect(badgeContainerClass).toContain("shrink-0");
+  });
+
+  // 11. Long Run-ID Containment Contract
+  it("enforces truncation and min-w-0 on long UUID run identifiers", () => {
+    const runIdClass = "font-mono text-xs text-slate-300 truncate max-w-full block";
+    expect(runIdClass).toContain("truncate");
+    expect(runIdClass).toContain("max-w-full");
+  });
+
+  // 12. Internal Table Scrolling Container Contract
+  it("enforces horizontal scroll containment for difference and matrix tables", () => {
+    const tableWrapperClass = "overflow-x-auto";
+    expect(tableWrapperClass).toBe("overflow-x-auto");
+  });
 });

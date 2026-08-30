@@ -80,48 +80,50 @@ export const VerificationCard: React.FC<VerificationCardProps> = ({
   };
 
   return (
-    <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg">
-      <div className="flex items-center justify-between mb-3">
-        <div>
+    <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg min-w-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3 min-w-0">
+        <div className="min-w-0 flex-1">
           <span className="text-xs uppercase font-medium text-slate-400 tracking-wider block">
             {label} Run
           </span>
-          <span className="font-mono text-xs text-slate-300 truncate max-w-[200px] block" title={runId}>
+          <span className="font-mono text-xs text-slate-300 truncate max-w-full block" title={runId}>
             {runId}
           </span>
         </div>
-        {getStatusBadge()}
+        <div className="shrink-0 self-start sm:self-center">
+          {getStatusBadge()}
+        </div>
       </div>
 
-      <div className="space-y-1 text-xs text-slate-300 border-t border-slate-800/80 pt-2.5">
-        <div className="flex justify-between py-0.5">
-          <span className="text-slate-400">Request Fingerprint Match:</span>
-          <span className={verification.fingerprint_matches ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+      <div className="space-y-1.5 text-xs text-slate-300 border-t border-slate-800/80 pt-2.5 min-w-0">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-0.5 gap-0.5 sm:gap-2 min-w-0">
+          <span className="text-slate-400 break-words">Request Fingerprint Match:</span>
+          <span className={verification.fingerprint_matches ? "text-emerald-400 font-medium shrink-0" : "text-amber-400 font-medium shrink-0"}>
             {verification.fingerprint_matches ? "Matches" : "Mismatch / Unavailable"}
           </span>
         </div>
-        <div className="flex justify-between py-0.5">
-          <span className="text-slate-400">Manifest Version ({verification.current_manifest_version}):</span>
-          <span className={verification.manifest_version_matches ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-0.5 gap-0.5 sm:gap-2 min-w-0">
+          <span className="text-slate-400 break-words">Manifest Version ({verification.current_manifest_version}):</span>
+          <span className={verification.manifest_version_matches ? "text-emerald-400 font-medium shrink-0" : "text-amber-400 font-medium shrink-0"}>
             {verification.manifest_version_matches ? "Matches" : "Mismatch"}
           </span>
         </div>
-        <div className="flex justify-between py-0.5">
-          <span className="text-slate-400">Engine Version ({verification.current_engine_version}):</span>
-          <span className={verification.engine_version_matches ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-0.5 gap-0.5 sm:gap-2 min-w-0">
+          <span className="text-slate-400 break-words">Engine Version ({verification.current_engine_version}):</span>
+          <span className={verification.engine_version_matches ? "text-emerald-400 font-medium shrink-0" : "text-amber-400 font-medium shrink-0"}>
             {verification.engine_version_matches ? "Matches" : "Mismatch"}
           </span>
         </div>
-        <div className="flex justify-between py-0.5">
-          <span className="text-slate-400">Replay Schema Version ({verification.current_replay_schema_version}):</span>
-          <span className={verification.replay_schema_version_matches ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-0.5 gap-0.5 sm:gap-2 min-w-0">
+          <span className="text-slate-400 break-words">Replay Schema Version ({verification.current_replay_schema_version}):</span>
+          <span className={verification.replay_schema_version_matches ? "text-emerald-400 font-medium shrink-0" : "text-amber-400 font-medium shrink-0"}>
             {verification.replay_schema_version_matches ? "Matches" : "Mismatch"}
           </span>
         </div>
       </div>
 
       {verification.reasons && verification.reasons.length > 0 && (
-        <div className="mt-3 pt-2 border-t border-slate-800/80">
+        <div className="mt-3 pt-2 border-t border-slate-800/80 min-w-0">
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
@@ -131,21 +133,21 @@ export const VerificationCard: React.FC<VerificationCardProps> = ({
           >
             <span>Verification Notes ({verification.reasons.length})</span>
             {expanded ? (
-              <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+              <ChevronUp className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             ) : (
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             )}
           </button>
 
           {expanded && (
             <ul
               id={`verification-details-${runId}`}
-              className="mt-2 space-y-1 text-xs text-slate-400 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 font-mono"
+              className="mt-2 space-y-1 text-xs text-slate-400 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 font-mono min-w-0"
             >
               {verification.reasons.map((reason, idx) => (
-                <li key={idx} className="flex items-start space-x-1.5 leading-tight">
-                  <span className="text-slate-500">•</span>
-                  <span>{reason}</span>
+                <li key={idx} className="flex items-start space-x-1.5 leading-tight min-w-0">
+                  <span className="text-slate-500 shrink-0">•</span>
+                  <span className="break-words min-w-0">{reason}</span>
                 </li>
               ))}
             </ul>

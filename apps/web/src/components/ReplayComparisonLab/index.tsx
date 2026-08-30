@@ -138,20 +138,20 @@ export function ReplayComparisonLab() {
   }, [baselineRunId, comparisonRunId, includeUnchanged, executeComparison]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full min-w-0">
       {/* Hidden Live Region for Screen Readers */}
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {ariaAnnouncement}
       </div>
 
       {/* Header & Navigation */}
-      <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-800 pb-5">
-        <div>
-          <div className="flex items-center space-x-2.5">
-            <div className="p-2 rounded-lg bg-sky-950 text-sky-400 border border-sky-600/40">
+      <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-800 pb-5 min-w-0">
+        <div className="min-w-0">
+          <div className="flex items-center space-x-2.5 min-w-0">
+            <div className="p-2 rounded-lg bg-sky-950 text-sky-400 border border-sky-600/40 shrink-0">
               <GitCompare className="w-6 h-6" />
             </div>
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white truncate">
               Deterministic Replay Comparison Lab
             </h1>
           </div>
@@ -161,7 +161,7 @@ export function ReplayComparisonLab() {
         </div>
 
         {/* Navigation Bar */}
-        <nav aria-label="Main Navigation" className="flex flex-wrap items-center gap-2">
+        <nav aria-label="Main Navigation" className="flex flex-wrap items-center gap-2 min-w-0">
           <Link
             href="/"
             className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition-colors focus:outline-none focus:ring-1 focus:ring-sky-500"
@@ -204,14 +204,14 @@ export function ReplayComparisonLab() {
       <EducationalNotice />
 
       {/* Run Selectors Section */}
-      <section aria-label="Run Selectors" className="p-5 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-slate-100 text-base">Select Historical Replay Runs</h2>
+      <section aria-label="Run Selectors" className="p-4 sm:p-5 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg mb-8 min-w-0">
+        <div className="flex items-center justify-between mb-4 min-w-0">
+          <h2 className="font-semibold text-slate-100 text-base truncate">Select Historical Replay Runs</h2>
           <button
             type="button"
             onClick={loadCompletedRuns}
             disabled={loadingRuns}
-            className="p-1.5 text-slate-400 hover:text-slate-100 rounded bg-slate-800/60 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-sky-500"
+            className="p-1.5 text-slate-400 hover:text-slate-100 rounded bg-slate-800/60 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-sky-500 shrink-0"
             title="Refresh runs list"
           >
             <RefreshCw className={`w-4 h-4 ${loadingRuns ? "animate-spin" : ""}`} />
@@ -219,15 +219,15 @@ export function ReplayComparisonLab() {
         </div>
 
         {runsError && (
-          <div className="p-3 mb-4 bg-red-950/40 border border-red-800 rounded-lg text-xs text-red-300 flex items-center space-x-2">
+          <div className="p-3 mb-4 bg-red-950/40 border border-red-800 rounded-lg text-xs text-red-300 flex items-center space-x-2 min-w-0">
             <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-            <span>{runsError}</span>
+            <span className="break-words">{runsError}</span>
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 min-w-0">
           {/* Baseline Run Selector */}
-          <div>
+          <div className="min-w-0">
             <label htmlFor="baseline-run-select" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
               Baseline Run (Reference)
             </label>
@@ -236,7 +236,7 @@ export function ReplayComparisonLab() {
               value={baselineRunId}
               onChange={(e) => setBaselineRunId(e.target.value)}
               disabled={loadingRuns || completedRuns.length === 0}
-              className="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono disabled:opacity-50"
+              className="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono disabled:opacity-50 max-w-full"
             >
               <option value="">-- Select Baseline Completed Run --</option>
               {completedRuns.map((run) => (
@@ -248,7 +248,7 @@ export function ReplayComparisonLab() {
           </div>
 
           {/* Comparison Run Selector */}
-          <div>
+          <div className="min-w-0">
             <label htmlFor="comparison-run-select" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
               Comparison Run (Subject)
             </label>
@@ -257,7 +257,7 @@ export function ReplayComparisonLab() {
               value={comparisonRunId}
               onChange={(e) => setComparisonRunId(e.target.value)}
               disabled={loadingRuns || completedRuns.length === 0}
-              className="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono disabled:opacity-50"
+              className="w-full bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono disabled:opacity-50 max-w-full"
             >
               <option value="">-- Select Comparison Completed Run --</option>
               {completedRuns.map((run) => (
@@ -270,33 +270,33 @@ export function ReplayComparisonLab() {
         </div>
 
         {/* Controls */}
-        <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
-          <label className="flex items-center space-x-2 text-slate-300 cursor-pointer">
+        <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs min-w-0">
+          <label className="flex items-center space-x-2 text-slate-300 cursor-pointer min-w-0">
             <input
               type="checkbox"
               checked={includeUnchanged}
               onChange={(e) => setIncludeUnchanged(e.target.checked)}
-              className="rounded bg-slate-950 border-slate-700 text-sky-500 focus:ring-sky-500"
+              className="rounded bg-slate-950 border-slate-700 text-sky-500 focus:ring-sky-500 shrink-0"
             />
-            <span>Include unchanged replay points in detailed difference table</span>
+            <span className="break-words">Include unchanged replay points in detailed difference table</span>
           </label>
         </div>
       </section>
 
       {/* Comparison Error Banner */}
       {comparisonError && (
-        <div className="p-4 mb-6 bg-red-950/40 border border-red-800 rounded-xl text-sm text-red-300 flex items-start space-x-3">
+        <div className="p-4 mb-6 bg-red-950/40 border border-red-800 rounded-xl text-sm text-red-300 flex items-start space-x-3 min-w-0">
           <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-          <div>
+          <div className="min-w-0">
             <h4 className="font-semibold text-red-300">Comparison Execution Error</h4>
-            <p className="text-xs text-red-400 mt-1">{comparisonError}</p>
+            <p className="text-xs text-red-400 mt-1 break-words">{comparisonError}</p>
           </div>
         </div>
       )}
 
       {/* Reproducibility Verification Cards */}
       {(baselineVerification || comparisonVerification || loadingVerification) && (
-        <section aria-label="Reproducibility Verification Cards" className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
+        <section aria-label="Reproducibility Verification Cards" className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 mb-8 min-w-0">
           <VerificationCard
             label="Baseline"
             runId={baselineRunId}
@@ -315,26 +315,26 @@ export function ReplayComparisonLab() {
       {/* Summary Metrics Cards */}
       {comparisonResult && (
         <>
-          <section aria-label="Summary Metrics" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
-            <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md">
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Total Aligned Points</span>
-              <span className="text-2xl font-bold text-slate-100 mt-1 block font-mono">{comparisonResult.aligned_point_count}</span>
+          <section aria-label="Summary Metrics" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 mb-8 min-w-0">
+            <div className="p-3 sm:p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md min-w-0">
+              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block truncate">Total Aligned</span>
+              <span className="text-xl sm:text-2xl font-bold text-slate-100 mt-1 block font-mono">{comparisonResult.aligned_point_count}</span>
             </div>
-            <div className="p-4 bg-slate-900/60 border border-amber-500/40 rounded-xl text-center shadow-md bg-amber-950/10">
-              <span className="text-xs font-medium text-amber-400 uppercase tracking-wider block">Changed Points</span>
-              <span className="text-2xl font-bold text-amber-300 mt-1 block font-mono">{comparisonResult.changed_point_count}</span>
+            <div className="p-3 sm:p-4 bg-slate-900/60 border border-amber-500/40 rounded-xl text-center shadow-md bg-amber-950/10 min-w-0">
+              <span className="text-xs font-medium text-amber-400 uppercase tracking-wider block truncate">Changed</span>
+              <span className="text-xl sm:text-2xl font-bold text-amber-300 mt-1 block font-mono">{comparisonResult.changed_point_count}</span>
             </div>
-            <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md">
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Unchanged Points</span>
-              <span className="text-2xl font-bold text-slate-300 mt-1 block font-mono">{comparisonResult.unchanged_point_count}</span>
+            <div className="p-3 sm:p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md min-w-0">
+              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block truncate">Unchanged</span>
+              <span className="text-xl sm:text-2xl font-bold text-slate-300 mt-1 block font-mono">{comparisonResult.unchanged_point_count}</span>
             </div>
-            <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md">
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Baseline Only</span>
-              <span className="text-2xl font-bold text-slate-300 mt-1 block font-mono">{comparisonResult.baseline_only_point_count}</span>
+            <div className="p-3 sm:p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md min-w-0">
+              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block truncate">Baseline Only</span>
+              <span className="text-xl sm:text-2xl font-bold text-slate-300 mt-1 block font-mono">{comparisonResult.baseline_only_point_count}</span>
             </div>
-            <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md">
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Comparison Only</span>
-              <span className="text-2xl font-bold text-slate-300 mt-1 block font-mono">{comparisonResult.comparison_only_point_count}</span>
+            <div className="p-3 sm:p-4 bg-slate-900/60 border border-slate-800 rounded-xl text-center shadow-md min-w-0">
+              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider block truncate">Comparison Only</span>
+              <span className="text-xl sm:text-2xl font-bold text-slate-300 mt-1 block font-mono">{comparisonResult.comparison_only_point_count}</span>
             </div>
           </section>
 
@@ -353,6 +353,7 @@ export function ReplayComparisonLab() {
           />
         </>
       )}
+
 
       {loadingComparison && (
         <div className="py-16 text-center text-slate-400 animate-pulse">

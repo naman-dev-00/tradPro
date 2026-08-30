@@ -20,10 +20,10 @@ export const TransitionMatrixCard: React.FC<TransitionMatrixCardProps> = ({
   statusTransitionCounts,
 }) => {
   return (
-    <div className="p-5 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg mb-8">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h3 className="font-semibold text-slate-100 text-base">
+    <div className="p-4 sm:p-5 bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg mb-8 min-w-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 min-w-0">
+        <div className="min-w-0">
+          <h3 className="font-semibold text-slate-100 text-base truncate">
             Neutral Status Transition Matrix
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -31,6 +31,7 @@ export const TransitionMatrixCard: React.FC<TransitionMatrixCardProps> = ({
           </p>
         </div>
       </div>
+
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs text-left border-collapse min-w-[500px]">
