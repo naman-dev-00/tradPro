@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { EducationalNotice } from "./EducationalNotice";
 import { RuleResultTree } from "../RuleLab/RuleResultTree";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 
 export const MultiSeriesLabWorkspace: React.FC = () => {
   const [strategies, setStrategies] = useState<StrategyResponse[]>([]);
@@ -218,6 +219,7 @@ export const MultiSeriesLabWorkspace: React.FC = () => {
           >
             <span>Data Quality Lab</span>
           </Link>
+          <AuthHeaderBadge />
         </div>
       </header>
 

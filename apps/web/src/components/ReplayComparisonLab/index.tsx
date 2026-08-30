@@ -18,6 +18,7 @@ import { TransitionMatrixCard } from "./TransitionMatrixCard";
 import { DifferenceTable } from "./DifferenceTable";
 import { ExportButtons } from "./ExportButtons";
 import { GitCompare, Home, History, Layers, PlayCircle, RefreshCw, AlertCircle } from "lucide-react";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 
 export function ReplayComparisonLab() {
   const searchParams = useSearchParams();
@@ -196,6 +197,7 @@ export function ReplayComparisonLab() {
           >
             <span>Data Quality Lab</span>
           </Link>
+          <AuthHeaderBadge />
         </nav>
       </header>
 

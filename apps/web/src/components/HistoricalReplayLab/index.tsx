@@ -13,6 +13,7 @@ import {
   HistoricalReplayResult,
 } from "@/lib/api";
 import { EducationalNotice } from "./EducationalNotice";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 import {
   Play,
   Loader2,
@@ -188,9 +189,8 @@ export function HistoricalReplayLab() {
             <ShieldCheck className="h-4 w-4 text-emerald-400" />
             <span>Data Quality</span>
           </Link>
+          <AuthHeaderBadge />
         </div>
-
-
       </div>
 
       <EducationalNotice />

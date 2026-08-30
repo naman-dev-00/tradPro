@@ -10,15 +10,11 @@ from src.engine.manifest import get_dataset_entry, get_manifest_checksums_snapsh
 from src.engine.historical_replay_evaluator import HistoricalReplayEvaluator
 from src.engine.historical_replay_models import HistoricalReplayResult
 from src.engine.multi_series_models import ensure_utc_datetime
+from src.engine.fingerprint import compute_request_fingerprint, canonicalize_json
 
 logger = logging.getLogger("tradepro.persistence")
 
 MAX_RESULT_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-
-from src.engine.fingerprint import compute_request_fingerprint, canonicalize_json
-
-
-
 
 def sanitize_error_message(err_str: str) -> str:
     # Ensure no file paths, stack traces, or raw SQL are exposed
@@ -32,6 +28,7 @@ class PersistenceService:
     @staticmethod
     def execute_or_reuse_historical_replay(
         db: Session,
+        owner_id: str,
         strategy_payload: Dict[str, Any],
         reference_dataset_id: str,
         subject_dataset_ids: List[str],
@@ -44,7 +41,7 @@ class PersistenceService:
         start_dt = ensure_utc_datetime(start_timestamp)
         end_dt = ensure_utc_datetime(end_timestamp)
 
-        # 2. Compute canonical request fingerprint (preserves subject order)
+        # 2. Compute canonical request fingerprint (preserves subject order and bit-for-bit exact golden vector)
         fingerprint = compute_request_fingerprint(
             strategy_payload=strategy_payload,
             reference_dataset_id=reference_dataset_id,
@@ -54,17 +51,18 @@ class PersistenceService:
             sampling_step=sampling_step,
         )
 
-        # 3. Check for existing COMPLETED run using completed_fingerprint
+        # 3. Check for existing COMPLETED run scoped strictly to this owner_id
         existing_run = (
             db.query(InspectionRun)
             .filter(
+                InspectionRun.owner_id == owner_id,
                 InspectionRun.completed_fingerprint == fingerprint,
                 InspectionRun.status == "COMPLETED",
             )
             .first()
         )
         if existing_run:
-            logger.info(f"Reusing existing COMPLETED inspection run '{existing_run.id}' for fingerprint '{fingerprint[:8]}...'")
+            logger.info(f"Reusing existing COMPLETED inspection run '{existing_run.id}' for owner '{owner_id[:8]}...' fingerprint '{fingerprint[:8]}...'")
             return existing_run, True
 
         ref_entry = get_dataset_entry(reference_dataset_id)
@@ -88,9 +86,10 @@ class PersistenceService:
             if len(serialized_payload.encode("utf-8")) > MAX_RESULT_PAYLOAD_BYTES:
                 raise ValueError(f"Serialized replay result payload size ({len(serialized_payload)} bytes) exceeds maximum allowed limit of 10 MB.")
 
-            # 5. Create & save COMPLETED record
+            # 5. Create & save COMPLETED record with owner_id
             now_utc = datetime.now(timezone.utc)
             run = InspectionRun(
+                owner_id=owner_id,
                 strategy_id=strategy_id,
                 strategy_version_snapshot="1.0.0",
                 strategy_definition_snapshot=strategy_payload,
@@ -124,11 +123,12 @@ class PersistenceService:
             return run, False
 
         except IntegrityError:
-            # Race condition: concurrent duplicate request committed first
+            # Race condition: concurrent duplicate request for same owner committed first
             db.rollback()
             concurrent_run = (
                 db.query(InspectionRun)
                 .filter(
+                    InspectionRun.owner_id == owner_id,
                     InspectionRun.completed_fingerprint == fingerprint,
                     InspectionRun.status == "COMPLETED",
                 )
@@ -143,10 +143,11 @@ class PersistenceService:
             db.rollback()
             sanitized_msg = sanitize_error_message(str(e))
 
-            # Record FAILED status in a separate short transaction (non-unique request_fingerprint, null completed_fingerprint)
+            # Record FAILED status in a separate short transaction
             try:
                 now_utc = datetime.now(timezone.utc)
                 failed_run = InspectionRun(
+                    owner_id=owner_id,
                     strategy_id=strategy_id,
                     strategy_version_snapshot="1.0.0",
                     strategy_definition_snapshot=strategy_payload,
@@ -166,7 +167,7 @@ class PersistenceService:
                     result_payload=None,
                     synthetic_data_confirmed=True,
                     request_fingerprint=fingerprint,
-                    completed_fingerprint=None,  # Null completed_fingerprint allows retries without unique constraint error!
+                    completed_fingerprint=None,  # Null completed_fingerprint allows retries without unique constraint error
                     manifest_checksums_snapshot=current_checksums,
                 )
                 db.add(failed_run)

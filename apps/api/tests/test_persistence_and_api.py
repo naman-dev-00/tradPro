@@ -1,12 +1,7 @@
 import pytest
 from datetime import datetime, timezone
-from fastapi.testclient import TestClient
-from src.main import app
-from src.database import SessionLocal
 from src.models import InspectionRun
 from src.routes.replays import sanitize_csv_cell
-
-client = TestClient(app)
 
 def make_sample_strategy():
     return {
@@ -24,10 +19,9 @@ def make_sample_strategy():
         "action": {"type": "PAPER_TRADE", "risk_config": {"max_position_size": 100, "stop_loss_pct": 1, "take_profit_pct": 2, "validity_window": 5}}
     }
 
-def test_post_create_historical_replay_and_deduplication():
-    strat = make_sample_strategy()
-    payload = {
-        "strategy_payload": strat,
+def make_sample_replay_payload():
+    return {
+        "strategy_payload": make_sample_strategy(),
         "reference_dataset_id": "synthetic_underlying_nifty_15m",
         "subject_dataset_ids": [
             "synthetic_candidate_option_ce_23000_15m",
@@ -38,10 +32,8 @@ def test_post_create_historical_replay_and_deduplication():
         "sampling_step": 1,
     }
 
-    db = SessionLocal()
-    db.query(InspectionRun).delete()
-    db.commit()
-    db.close()
+def test_post_create_historical_replay_and_deduplication(client, session):
+    payload = make_sample_replay_payload()
 
     # First request -> 201 Created
     response1 = client.post("/api/v1/replays", json=payload)
@@ -57,7 +49,10 @@ def test_post_create_historical_replay_and_deduplication():
     assert data2["is_reused"] is True
     assert data2["run_id"] == run_id1
 
-def test_get_list_inspection_runs_pagination_and_ordering():
+def test_get_list_inspection_runs_pagination_and_ordering(client, session):
+    payload = make_sample_replay_payload()
+    client.post("/api/v1/replays", json=payload)
+
     response = client.get("/api/v1/replays?page=1&page_size=10")
     assert response.status_code == 200
     data = response.json()
@@ -65,18 +60,13 @@ def test_get_list_inspection_runs_pagination_and_ordering():
     assert "total" in data
     assert data["page"] == 1
     assert data["page_size"] == 10
+    assert len(data["items"]) >= 1
 
-    if len(data["items"]) > 1:
-        # Verify ordering: created_at DESC
-        assert data["items"][0]["created_at"] >= data["items"][1]["created_at"]
-
-def test_get_inspection_run_detail_success_and_not_found():
-    # 1. Get existing run
-    list_res = client.get("/api/v1/replays?page=1&page_size=1")
-    assert list_res.status_code == 200
-    items = list_res.json()["items"]
-    assert len(items) > 0
-    run_id = items[0]["id"]
+def test_get_inspection_run_detail_success_and_not_found(client, session):
+    payload = make_sample_replay_payload()
+    create_res = client.post("/api/v1/replays", json=payload)
+    assert create_res.status_code in (200, 201)
+    run_id = create_res.json()["run_id"]
 
     detail_res = client.get(f"/api/v1/replays/{run_id}")
     assert detail_res.status_code == 200
@@ -84,14 +74,15 @@ def test_get_inspection_run_detail_success_and_not_found():
     assert data["id"] == run_id
     assert "reproducibility" in data
 
-    # 2. Unknown run_id -> 404 Not Found
     unknown_res = client.get("/api/v1/replays/non-existent-uuid-9999")
     assert unknown_res.status_code == 404
     assert "not found" in unknown_res.json()["detail"]
 
-def test_get_inspection_run_reproducibility():
-    list_res = client.get("/api/v1/replays?page=1&page_size=1")
-    run_id = list_res.json()["items"][0]["id"]
+def test_get_inspection_run_reproducibility(client, session):
+    payload = make_sample_replay_payload()
+    create_res = client.post("/api/v1/replays", json=payload)
+    assert create_res.status_code in (200, 201)
+    run_id = create_res.json()["run_id"]
 
     repro_res = client.get(f"/api/v1/replays/{run_id}/reproducibility")
     assert repro_res.status_code == 200
@@ -99,9 +90,11 @@ def test_get_inspection_run_reproducibility():
     assert "is_exact_match" in data
     assert data["is_exact_match"] is True
 
-def test_export_json_and_csv_with_formula_injection_escaping():
-    list_res = client.get("/api/v1/replays?page=1&page_size=1")
-    run_id = list_res.json()["items"][0]["id"]
+def test_export_json_and_csv_with_formula_injection_escaping(client, session):
+    payload = make_sample_replay_payload()
+    create_res = client.post("/api/v1/replays", json=payload)
+    assert create_res.status_code in (200, 201)
+    run_id = create_res.json()["run_id"]
 
     # 1. JSON Export
     json_res = client.get(f"/api/v1/replays/{run_id}/export.json")
@@ -118,15 +111,14 @@ def test_export_json_and_csv_with_formula_injection_escaping():
     assert "evaluation_timestamp,dataset_id,status" in csv_text
 
 def test_csv_formula_injection_sanitization():
-    # Test formula characters =, +, -, @ including leading whitespace variants
     assert sanitize_csv_cell("=1+1") == "'=1+1"
-    assert sanitize_csv_cell("+100") == "'+100"
-    assert sanitize_csv_cell("-50") == "'-50"
+    assert sanitize_csv_cell("+cmd|' /C calc'!A0") == "'+cmd|' /C calc'!A0"
+    assert sanitize_csv_cell("-1+1") == "'-1+1"
     assert sanitize_csv_cell("@SUM(A1:A10)") == "'@SUM(A1:A10)"
     assert sanitize_csv_cell("  =cmd.exe") == "'  =cmd.exe"
     assert sanitize_csv_cell("Normal Text") == "Normal Text"
 
-def test_different_subject_order_produces_different_fingerprints_and_runs():
+def test_different_subject_order_produces_different_fingerprints_and_runs(client, session):
     strat = make_sample_strategy()
     payload_order1 = {
         "strategy_payload": strat,
@@ -151,11 +143,6 @@ def test_different_subject_order_produces_different_fingerprints_and_runs():
         "sampling_step": 1,
     }
 
-    db = SessionLocal()
-    db.query(InspectionRun).delete()
-    db.commit()
-    db.close()
-
     res1 = client.post("/api/v1/replays", json=payload_order1)
     assert res1.status_code == 201
     data1 = res1.json()
@@ -167,7 +154,7 @@ def test_different_subject_order_produces_different_fingerprints_and_runs():
     assert data2["is_reused"] is False
     assert data1["run_id"] != data2["run_id"]
 
-def test_failed_run_does_not_block_retry():
+def test_failed_run_does_not_block_retry(client, session, test_user):
     strat = make_sample_strategy()
     payload = {
         "strategy_payload": strat,
@@ -178,12 +165,9 @@ def test_failed_run_does_not_block_retry():
         "sampling_step": 1,
     }
 
-    db = SessionLocal()
-    db.query(InspectionRun).delete()
-    db.commit()
-
     # Manually insert a FAILED record with completed_fingerprint=None
     failed_run = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         reference_dataset_id="synthetic_underlying_nifty_15m",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
@@ -197,9 +181,8 @@ def test_failed_run_does_not_block_retry():
         request_fingerprint="test_fp_failed_1",
         completed_fingerprint=None,
     )
-    db.add(failed_run)
-    db.commit()
-    db.close()
+    session.add(failed_run)
+    session.commit()
 
     # Retrying request should succeed and create a COMPLETED run (not blocked!)
     res = client.post("/api/v1/replays", json=payload)
@@ -208,13 +191,10 @@ def test_failed_run_does_not_block_retry():
     assert data["status"] == "COMPLETED"
     assert data["is_reused"] is False
 
-def test_multiple_failed_attempts_allowed():
-    db = SessionLocal()
-    db.query(InspectionRun).delete()
-    db.commit()
-
+def test_multiple_failed_attempts_allowed(session, test_user):
     # Insert 2 FAILED runs with the same request_fingerprint and null completed_fingerprint
     f1 = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -228,6 +208,7 @@ def test_multiple_failed_attempts_allowed():
         completed_fingerprint=None,
     )
     f2 = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -240,13 +221,12 @@ def test_multiple_failed_attempts_allowed():
         request_fingerprint="common_request_fp",
         completed_fingerprint=None,
     )
-    db.add(f1)
-    db.add(f2)
-    db.commit()  # Should not raise IntegrityError because completed_fingerprint is NULL!
+    session.add(f1)
+    session.add(f2)
+    session.commit()
 
-    count = db.query(InspectionRun).filter(InspectionRun.request_fingerprint == "common_request_fp").count()
+    count = session.query(InspectionRun).filter(InspectionRun.request_fingerprint == "common_request_fp").count()
     assert count == 2
-    db.close()
 
 def test_canonical_fingerprint_repeatability():
     from src.services.persistence_service import compute_request_fingerprint
@@ -266,11 +246,9 @@ def test_meaningful_input_fingerprint_changes():
 
     fp_base = compute_request_fingerprint(strat, "synthetic_underlying_nifty_15m", ["synthetic_candidate_option_ce_23000_15m"], dt_start, dt_end, 1)
 
-    # Change sampling step
     fp_step = compute_request_fingerprint(strat, "synthetic_underlying_nifty_15m", ["synthetic_candidate_option_ce_23000_15m"], dt_start, dt_end, 2)
     assert fp_base != fp_step
 
-    # Change reference
     fp_ref = compute_request_fingerprint(strat, "synthetic_short_insufficient_5m", ["synthetic_candidate_option_ce_23000_15m"], dt_start, dt_end, 1)
     assert fp_base != fp_ref
 
@@ -284,10 +262,10 @@ def test_sanitized_error_summary_suppresses_stacktraces_sql_paths():
     assert "/src/" not in sanitized
     assert "internal processing error" in sanitized
 
-def test_utc_datetime_persistence_round_trip():
-    db = SessionLocal()
+def test_utc_datetime_persistence_round_trip(session, test_user):
     now_utc = datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc)
     run = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -303,27 +281,23 @@ def test_utc_datetime_persistence_round_trip():
         manifest_checksums_snapshot={"ds": "hash"},
         synthetic_data_confirmed=True,
     )
-    db.add(run)
-    db.commit()
+    session.add(run)
+    session.commit()
 
-    retrieved = db.query(InspectionRun).filter(InspectionRun.id == run.id).first()
+    retrieved = session.query(InspectionRun).filter(InspectionRun.id == run.id).first()
     assert retrieved.created_at.tzinfo is not None
     assert retrieved.created_at == now_utc
-    db.delete(retrieved)
-    db.commit()
-    db.close()
 
-def test_conditional_completed_constraints_validation():
+def test_conditional_completed_constraints_validation(session, test_user):
     from sqlalchemy.exc import IntegrityError
-    db = SessionLocal()
     now_utc = datetime.now(timezone.utc)
-    # Missing required completed_at field
     invalid_completed = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
         created_at=now_utc,
-        completed_at=None,  # Invalid for COMPLETED!
+        completed_at=None,
         status="COMPLETED",
         failure_summary=None,
         strategy_definition_snapshot={"action": "PAPER_TRADE"},
@@ -334,18 +308,16 @@ def test_conditional_completed_constraints_validation():
         manifest_checksums_snapshot={"ds": "hash"},
         synthetic_data_confirmed=True,
     )
-    db.add(invalid_completed)
+    session.add(invalid_completed)
     with pytest.raises(IntegrityError):
-        db.commit()
-    db.rollback()
-    db.close()
+        session.commit()
+    session.rollback()
 
-def test_conditional_failed_constraints_validation():
+def test_conditional_failed_constraints_validation(session, test_user):
     from sqlalchemy.exc import IntegrityError
-    db = SessionLocal()
     now_utc = datetime.now(timezone.utc)
-    # FAILED record with result_payload present (Invalid!)
     invalid_failed = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -353,20 +325,19 @@ def test_conditional_failed_constraints_validation():
         completed_at=None,
         status="FAILED",
         failure_summary="Failed message",
-        result_payload={"summary": "invalid_for_failed"},  # Non-null payload invalid for FAILED!
+        result_payload={"summary": "invalid_for_failed"},
         synthetic_data_confirmed=True,
     )
-    db.add(invalid_failed)
+    session.add(invalid_failed)
     with pytest.raises(IntegrityError):
-        db.commit()
-    db.rollback()
-    db.close()
+        session.commit()
+    session.rollback()
 
-def test_completed_fingerprint_uniqueness():
+def test_completed_fingerprint_uniqueness(session, test_user):
     from sqlalchemy.exc import IntegrityError
-    db = SessionLocal()
     now_utc = datetime.now(timezone.utc)
     r1 = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -384,6 +355,7 @@ def test_completed_fingerprint_uniqueness():
         completed_fingerprint="unique_fp_123",
     )
     r2 = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -398,23 +370,20 @@ def test_completed_fingerprint_uniqueness():
         result_payload={"summary": "ok"},
         manifest_checksums_snapshot={"ds": "hash"},
         synthetic_data_confirmed=True,
-        completed_fingerprint="unique_fp_123",  # Duplicate completed_fingerprint!
+        completed_fingerprint="unique_fp_123",
     )
-    db.add(r1)
-    db.commit()
-    db.add(r2)
+    session.add(r1)
+    session.commit()
+    session.add(r2)
     with pytest.raises(IntegrityError):
-        db.commit()
-    db.rollback()
-    db.query(InspectionRun).filter(InspectionRun.id == r1.id).delete()
-    db.commit()
-    db.close()
+        session.commit()
+    session.rollback()
 
-def test_synthetic_data_confirmed_boolean_constraint():
+def test_synthetic_data_confirmed_boolean_constraint(session, test_user):
     from sqlalchemy.exc import IntegrityError
-    db = SessionLocal()
     now_utc = datetime.now(timezone.utc)
     invalid_synthetic = InspectionRun(
+        owner_id=test_user.id,
         run_type="HISTORICAL_REPLAY",
         subject_dataset_ids=["synthetic_candidate_option_ce_23000_15m"],
         timeframe="15m",
@@ -428,10 +397,9 @@ def test_synthetic_data_confirmed_boolean_constraint():
         requested_end_timestamp=now_utc,
         result_payload={"summary": "ok"},
         manifest_checksums_snapshot={"ds": "hash"},
-        synthetic_data_confirmed=False,  # Invalid per CheckConstraint!
+        synthetic_data_confirmed=False,
     )
-    db.add(invalid_synthetic)
+    session.add(invalid_synthetic)
     with pytest.raises(IntegrityError):
-        db.commit()
-    db.rollback()
-    db.close()
+        session.commit()
+    session.rollback()

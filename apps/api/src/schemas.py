@@ -1,6 +1,46 @@
 import datetime
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 from pydantic import BaseModel, Field, ConfigDict
+
+# --- User & Auth Schemas ---
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    email: str
+    role: Literal["VIEWER", "EDITOR", "ADMIN"]
+    is_active: bool
+    created_at: datetime.datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class UserLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username_or_email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+
+class CSRFTokenResponse(BaseModel):
+    csrf_token: str
+
+class UserRoleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["VIEWER", "EDITOR", "ADMIN"]
+
+class UserStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    is_active: bool
+
+class LegacyTransferRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_user_id: str
+    resource_type: Literal["ALL", "STRATEGIES", "REPLAYS"]
+    resource_ids: List[str] = Field(..., min_length=1, max_length=100)
+
+class LegacyTransferResponse(BaseModel):
+    transferred_count: int
+    rejected_count: int
+
+# --- Strategy & Indicator Schemas ---
 
 class CandleInput(BaseModel):
     timestamp: datetime.datetime
@@ -68,6 +108,7 @@ class StrategyResponse(StrategyBase):
     updated_at: datetime.datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 DefinitionRef = Any
 
 from src.engine.replay_comparison_models import (

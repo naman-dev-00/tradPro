@@ -6,6 +6,7 @@ import { getStrategyById } from "../../lib/api";
 import { StrategyBuilder } from "../../components/StrategyBuilder";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 
 function BuilderContent() {
   const router = useRouter();
@@ -84,6 +85,7 @@ function BuilderContent() {
           <Link href="/multi-series-lab" className="text-sky-400 hover:text-sky-300 font-bold transition">
             Multi-Series Lab →
           </Link>
+          <AuthHeaderBadge />
         </div>
       </div>
 

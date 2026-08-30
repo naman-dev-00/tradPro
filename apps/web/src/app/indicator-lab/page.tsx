@@ -4,6 +4,7 @@ import React from "react";
 import Link from "next/link";
 import { IndicatorLab } from "../../components/IndicatorLab";
 import { FlaskConical } from "lucide-react";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 
 export default function IndicatorLabPage() {
   return (
@@ -41,6 +42,7 @@ export default function IndicatorLabPage() {
             <Link href="/multi-series-lab" className="hover:text-white transition px-3 py-1.5">
               Multi-Series Lab
             </Link>
+            <AuthHeaderBadge />
           </nav>
         </div>
       </header>

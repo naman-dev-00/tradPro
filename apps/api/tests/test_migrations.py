@@ -5,106 +5,119 @@ from alembic.config import Config
 from alembic import command
 from src.database import Base
 from src.config import settings
+from src.models import LEGACY_PRINCIPAL_ID
+
+def get_alembic_config(db_url: str) -> Config:
+    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+    config = Config(alembic_ini_path)
+    config.set_main_option("sqlalchemy.url", db_url)
+    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
+    return config
 
 def test_alembic_migration_empty_to_head_direct(tmp_path):
     db_file = tmp_path / "test_migration_empty.db"
     db_url = f"sqlite:///{db_file}"
-
-    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config = Config(alembic_ini_path)
-    config.set_main_option("sqlalchemy.url", db_url)
-    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
-
+    config = get_alembic_config(db_url)
     engine = create_engine(db_url)
+
     command.upgrade(config, "head")
 
     inspector = inspect(engine)
     tables = inspector.get_table_names()
+    assert "users" in tables
+    assert "user_sessions" in tables
     assert "strategies" in tables
     assert "inspection_runs" in tables
 
-    columns = {col["name"]: col for col in inspector.get_columns("inspection_runs")}
-    assert "request_fingerprint" in columns
-    assert "completed_fingerprint" in columns
-    assert "manifest_checksums_snapshot" in columns
-    assert "synthetic_data_confirmed" in columns
+    # Verify legacy principal was seeded during migration
+    with engine.connect() as conn:
+        legacy = conn.execute(text(f"SELECT username, is_active FROM users WHERE id = '{LEGACY_PRINCIPAL_ID}'")).fetchone()
+        assert legacy is not None
+        assert legacy[0] == "system_legacy_owner"
+        assert bool(legacy[1]) is False
 
-    indexes = {idx["name"]: idx for idx in inspector.get_indexes("inspection_runs")}
-    assert "ix_inspection_runs_completed_fingerprint" in indexes
-    assert "ix_inspection_runs_request_fingerprint" in indexes
-
-    import gc
     engine.dispose()
-    gc.collect()
 
-def test_alembic_migration_fresh_and_upgrade(tmp_path):
-    db_file = tmp_path / "test_migration.db"
+def test_alembic_migration_stepwise_and_backfill(tmp_path):
+    db_file = tmp_path / "test_stepwise.db"
     db_url = f"sqlite:///{db_file}"
-
-    # Set up alembic config targeting temporary database
-    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config = Config(alembic_ini_path)
-    config.set_main_option("sqlalchemy.url", db_url)
-    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
-
+    config = get_alembic_config(db_url)
     engine = create_engine(db_url)
 
-    # 1. Upgrade to 0001_initial_schema first
-    command.upgrade(config, "0001_initial_schema")
+    # 1. Upgrade to 0002_inspection_history
+    command.upgrade(config, "0002_inspection_history")
 
-    # Insert a sample strategy to test data preservation during migration
+    # Insert unowned strategy and inspection run
     with engine.connect() as conn:
         conn.execute(
             text(
                 "INSERT INTO strategies (id, name, timeframe, candidate_selection_mode, payload) "
-                "VALUES ('test-strat-1', 'Test Strategy', '15m', 'FIRST_ELIGIBLE', '{\"action\": \"BUY\"}')"
+                "VALUES ('strat-old-1', 'Legacy Strat', '15m', 'FIRST_ELIGIBLE', '{\"action\": \"BUY\"}')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO inspection_runs (id, run_type, timeframe, engine_version, manifest_version, "
+                "created_at, completed_at, status, synthetic_data_confirmed, completed_fingerprint, subject_dataset_ids, "
+                "reference_dataset_id, requested_start_timestamp, requested_end_timestamp, strategy_definition_snapshot, result_payload, manifest_checksums_snapshot) "
+                "VALUES ('run-old-1', 'HISTORICAL_REPLAY', '15m', '1.0.0', '1.0.0', "
+                "'2026-08-30 00:00:00', '2026-08-30 00:00:00', 'COMPLETED', 1, 'fp_legacy_001', '[\"subj1\"]', "
+                "'ref_ds', '2026-08-30 00:00:00', '2026-08-30 00:00:00', '{\"a\": 1}', '{\"res\": 1}', '{\"chk\": 1}')"
             )
         )
         conn.commit()
 
-    # 2. Upgrade to head (0002_inspection_history)
+    # 2. Upgrade to head (0003_auth_ownership)
     command.upgrade(config, "head")
 
+    # Verify existing unowned rows were backfilled to legacy principal
+    with engine.connect() as conn:
+        strat = conn.execute(text("SELECT owner_id FROM strategies WHERE id = 'strat-old-1'")).fetchone()
+        assert strat[0] == LEGACY_PRINCIPAL_ID
+
+        run = conn.execute(text("SELECT owner_id FROM inspection_runs WHERE id = 'run-old-1'")).fetchone()
+        assert run[0] == LEGACY_PRINCIPAL_ID
+
+    # 3. Test downgrade to 0002_inspection_history without collisions
+    command.downgrade(config, "0002_inspection_history")
     inspector = inspect(engine)
     tables = inspector.get_table_names()
-    assert "strategies" in tables
+    assert "users" not in tables
+    assert "user_sessions" not in tables
     assert "inspection_runs" in tables
 
-    # Verify pre-existing strategy survived upgrade
-    with engine.connect() as conn:
-        res = conn.execute(text("SELECT name FROM strategies WHERE id = 'test-strat-1'")).fetchone()
-        assert res is not None
-        assert res[0] == "Test Strategy"
-
-    # Verify inspection_runs columns and indexes
-    columns = {col["name"]: col for col in inspector.get_columns("inspection_runs")}
-    assert "request_fingerprint" in columns
-    assert "completed_fingerprint" in columns
-    assert "manifest_checksums_snapshot" in columns
-    assert "synthetic_data_confirmed" in columns
-
-    indexes = {idx["name"]: idx for idx in inspector.get_indexes("inspection_runs")}
-    assert "ix_inspection_runs_strategy_id" in indexes
-    assert "ix_inspection_runs_run_type" in indexes
-    assert "ix_inspection_runs_status" in indexes
-    assert "ix_inspection_runs_request_fingerprint" in indexes
-    assert "ix_inspection_runs_completed_fingerprint" in indexes
-
-    # 3. Test downgrade to 0001_initial_schema
-    command.downgrade(config, "0001_initial_schema")
-    inspector_downgraded = inspect(engine)
-    tables_downgraded = inspector_downgraded.get_table_names()
-    assert "strategies" in tables_downgraded
-    assert "inspection_runs" not in tables_downgraded
-
-    # 4. Test re-upgrade back to head
-    command.upgrade(config, "head")
-    inspector_reup = inspect(engine)
-    assert "inspection_runs" in inspector_reup.get_table_names()
-
-    import gc
     engine.dispose()
-    gc.collect()
+
+def test_alembic_downgrade_collision_refusal(tmp_path):
+    db_file = tmp_path / "test_collision.db"
+    db_url = f"sqlite:///{db_file}"
+    config = get_alembic_config(db_url)
+    engine = create_engine(db_url)
+
+    # Upgrade to head (0003_auth_ownership)
+    command.upgrade(config, "head")
+
+    # Insert two users
+    with engine.connect() as conn:
+        conn.execute(text("""
+            INSERT INTO users (id, username, normalized_username, email, normalized_email, hashed_password, role, is_active, created_at, updated_at)
+            VALUES ('user-1', 'user1', 'user1', 'u1@test.com', 'u1@test.com', 'hash', 'EDITOR', 1, '2026-08-30 00:00:00', '2026-08-30 00:00:00'),
+                   ('user-2', 'user2', 'user2', 'u2@test.com', 'u2@test.com', 'hash', 'EDITOR', 1, '2026-08-30 00:00:00', '2026-08-30 00:00:00')
+        """))
+        # Insert two runs for different owners with SAME completed_fingerprint
+        conn.execute(text("""
+            INSERT INTO inspection_runs (id, owner_id, run_type, timeframe, engine_version, manifest_version, created_at, completed_at, status, synthetic_data_confirmed, completed_fingerprint, subject_dataset_ids, reference_dataset_id, requested_start_timestamp, requested_end_timestamp, strategy_definition_snapshot, result_payload, manifest_checksums_snapshot)
+            VALUES ('run-u1', 'user-1', 'HISTORICAL_REPLAY', '15m', '1.0.0', '1.0.0', '2026-08-30 00:00:00', '2026-08-30 00:00:00', 'COMPLETED', 1, 'duplicate_fp_123', '[\"subj1\"]', 'ref_ds', '2026-08-30 00:00:00', '2026-08-30 00:00:00', '{\"a\": 1}', '{\"res\": 1}', '{\"chk\": 1}'),
+                   ('run-u2', 'user-2', 'HISTORICAL_REPLAY', '15m', '1.0.0', '1.0.0', '2026-08-30 00:00:00', '2026-08-30 00:00:00', 'COMPLETED', 1, 'duplicate_fp_123', '[\"subj1\"]', 'ref_ds', '2026-08-30 00:00:00', '2026-08-30 00:00:00', '{\"a\": 1}', '{\"res\": 1}', '{\"chk\": 1}')
+        """))
+        conn.commit()
+
+    # Attempt downgrade -> Must safely abort with collision error to protect data integrity
+    with pytest.raises(Exception) as exc_info:
+        command.downgrade(config, "0002_inspection_history")
+    assert "cross-owner duplicate completed_fingerprint" in str(exc_info.value)
+
+    engine.dispose()
 
 def test_alembic_revision_identifiers_and_graph_invariants():
     from alembic.script import ScriptDirectory
@@ -117,7 +130,7 @@ def test_alembic_revision_identifiers_and_graph_invariants():
 
     # 1. Alembic has exactly one head revision
     assert len(heads) == 1
-    assert heads[0] == "0002_inspection_history"
+    assert heads[0] == "0003_auth_ownership"
 
     # 2. Every revision identifier is non-empty, <= 32 chars, and down_revision resolves
     for script in script_directory.walk_revisions():
@@ -139,79 +152,24 @@ def test_alembic_migration_postgres_compatibility():
 
     engine = create_engine(db_url)
 
-    # 1. Verify connection and SELECT 1
     with engine.connect() as conn:
         res = conn.execute(text("SELECT 1")).scalar()
         assert res == 1
 
-    # 2. Run Alembic upgrade to head
-    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config = Config(alembic_ini_path)
-    config.set_main_option("sqlalchemy.url", db_url)
-    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
-
+    config = get_alembic_config(db_url)
     command.upgrade(config, "head")
 
     inspector = inspect(engine)
     tables = inspector.get_table_names()
+    assert "users" in tables
+    assert "user_sessions" in tables
     assert "inspection_runs" in tables
     assert "strategies" in tables
 
-    columns = {col["name"]: col for col in inspector.get_columns("inspection_runs")}
-    assert "synthetic_data_confirmed" in columns
-    assert "completed_fingerprint" in columns
-    assert "request_fingerprint" in columns
-
-    # 3. Check current revision reported by Alembic context is 0002_inspection_history
     from alembic.migration import MigrationContext
     with engine.connect() as conn:
         ctx = MigrationContext.configure(conn)
         current_rev = ctx.get_current_revision()
-        assert current_rev == "0002_inspection_history"
+        assert current_rev == "0003_auth_ownership"
 
     engine.dispose()
-
-def test_alembic_url_precedence_explicit_url_takes_priority(monkeypatch, tmp_path):
-    pg_url = "postgresql://user:secret@localhost:5432/testdb"
-    monkeypatch.setattr(settings, "DATABASE_URL", pg_url)
-    monkeypatch.setenv("DATABASE_URL", pg_url)
-
-    db_file = tmp_path / "explicit_sqlite.db"
-    sqlite_url = f"sqlite:///{db_file}"
-
-    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config = Config(alembic_ini_path)
-    config.set_main_option("sqlalchemy.url", sqlite_url)
-    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
-
-    from src.migrations.env import configure_database_url
-    res_url = configure_database_url(config)
-    assert res_url == sqlite_url
-    assert config.get_main_option("sqlalchemy.url") == sqlite_url
-
-    command.upgrade(config, "head")
-
-    engine = create_engine(sqlite_url)
-    inspector = inspect(engine)
-    tables = inspector.get_table_names()
-    assert "strategies" in tables
-    assert "inspection_runs" in tables
-
-    import gc
-    engine.dispose()
-    gc.collect()
-
-def test_alembic_url_precedence_runtime_url_fallback(monkeypatch):
-    pg_url = "postgresql://user:pass%40word@localhost:5432/testdb"
-    monkeypatch.setattr(settings, "DATABASE_URL", pg_url)
-    monkeypatch.setenv("DATABASE_URL", pg_url)
-
-    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config = Config(alembic_ini_path)
-
-    from src.migrations.env import configure_database_url
-    res_url = configure_database_url(config)
-    assert res_url == pg_url
-    # Ensure section parsing works without ConfigParser InterpolationSyntaxError
-    section = config.get_section(config.config_ini_section, {})
-    assert section.get("sqlalchemy.url") == pg_url

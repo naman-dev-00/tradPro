@@ -2,10 +2,8 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from fastapi.testclient import TestClient
 from src.main import app
-from src.database import get_db, Base, engine
+from src.database import get_db
 from src.models import Strategy
-
-client = TestClient(app)
 
 def make_api_candles(count: int, instrument_id: str = "NIFTY", timeframe: str = "15m"):
     base_dt = datetime(2026, 8, 28, 9, 15, tzinfo=timezone.utc)
@@ -27,7 +25,7 @@ def make_api_candles(count: int, instrument_id: str = "NIFTY", timeframe: str = 
 
 
 # 18. Unknown Saved Strategy ID
-def test_unknown_saved_strategy_id():
+def test_unknown_saved_strategy_id(client):
     payload = {
         "strategy_id": "00000000-0000-0000-0000-000000000000",
         "reference_dataset_id": "synthetic_underlying_nifty_15m"
@@ -40,7 +38,7 @@ def test_unknown_saved_strategy_id():
 
 
 # 19. Unexpected Request Fields
-def test_unexpected_request_fields_extra_forbid():
+def test_unexpected_request_fields_extra_forbid(client):
     payload = {
         "strategy": {
             "name": "Test", "timeframe": "15m", "candidate_selection_mode": "FIRST_ELIGIBLE",
@@ -55,7 +53,7 @@ def test_unexpected_request_fields_extra_forbid():
 
 
 # 20. Unknown Indicators and Operators
-def test_unknown_indicators_and_operators():
+def test_unknown_indicators_and_operators(client):
     payload = {
         "strategy": {
             "name": "Unknown Test", "timeframe": "15m", "candidate_selection_mode": "FIRST_ELIGIBLE",
@@ -77,7 +75,7 @@ def test_unknown_indicators_and_operators():
 
 
 # 21. Empty Series Rejection
-def test_empty_series_rejection():
+def test_empty_series_rejection(client):
     payload = {
         "strategy": {
             "name": "Test", "timeframe": "15m", "candidate_selection_mode": "FIRST_ELIGIBLE",
@@ -91,7 +89,7 @@ def test_empty_series_rejection():
 
 
 # 22. Duplicate Timestamps Rejection
-def test_duplicate_timestamps_rejection():
+def test_duplicate_timestamps_rejection(client):
     c1 = make_api_candles(1)[0]
     c2 = make_api_candles(1)[0] # Duplicate timestamp
     payload = {
@@ -108,7 +106,7 @@ def test_duplicate_timestamps_rejection():
 
 
 # 23. Mismatched Instrument IDs inside one series
-def test_mismatched_instrument_ids():
+def test_mismatched_instrument_ids(client):
     c1 = make_api_candles(1, instrument_id="NIFTY")[0]
     c2 = make_api_candles(2, instrument_id="BANKNIFTY")[1]
     payload = {
@@ -124,7 +122,7 @@ def test_mismatched_instrument_ids():
 
 
 # 24. 5,000-Candle Limit
-def test_5000_candle_limit_exceeded():
+def test_5000_candle_limit_exceeded(client):
     candles = make_api_candles(5001)
     payload = {
         "strategy": {
@@ -139,40 +137,36 @@ def test_5000_candle_limit_exceeded():
 
 
 # 25. Seeded Milestone 1 Strategy Compatibility
-def test_seeded_milestone_1_strategy_compatibility(session):
-    app.dependency_overrides[get_db] = lambda: session
-    try:
-        strat_payload = {
-            "name": "Seeded M1 Strategy",
-            "timeframe": "15m",
-            "candidate_selection_mode": "FIRST_ELIGIBLE",
-            "global_conditions": {
-                "type": "CONDITION",
-                "lhs": {"indicator": "PRICE", "symbol": "NIFTY"},
-                "operator": "GREATER_THAN",
-                "rhs": {"type": "NUMBER", "value": 100.0}
-            },
-            "action": {"type": "PAPER_TRADE", "risk_config": {"max_position_size": 100000, "stop_loss_pct": 2.5, "take_profit_pct": 5, "validity_window": 5}}
-        }
-        db_strat = Strategy(id="m1-seeded-uuid", name="Seeded M1 Strategy", description="Seeded test strategy", timeframe="15m", payload=strat_payload)
-        session.add(db_strat)
-        session.commit()
+def test_seeded_milestone_1_strategy_compatibility(client, session, test_user):
+    strat_payload = {
+        "name": "Seeded M1 Strategy",
+        "timeframe": "15m",
+        "candidate_selection_mode": "FIRST_ELIGIBLE",
+        "global_conditions": {
+            "type": "CONDITION",
+            "lhs": {"indicator": "PRICE", "symbol": "NIFTY"},
+            "operator": "GREATER_THAN",
+            "rhs": {"type": "NUMBER", "value": 100.0}
+        },
+        "action": {"type": "PAPER_TRADE", "risk_config": {"max_position_size": 100000, "stop_loss_pct": 2.5, "take_profit_pct": 5, "validity_window": 5}}
+    }
+    db_strat = Strategy(id="m1-seeded-uuid", owner_id=test_user.id, name="Seeded M1 Strategy", description="Seeded test strategy", timeframe="15m", payload=strat_payload)
+    session.add(db_strat)
+    session.commit()
 
-        req_payload = {
-            "strategy_id": "m1-seeded-uuid",
-            "reference_dataset_id": "synthetic_underlying_nifty_15m"
-        }
-        response = client.post("/rules/evaluate", json=req_payload)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["overall_status"] == "TRUE"
-        assert data["reference_series_result"].get("condition_id") == "global.0" or data["reference_series_result"].get("group_id") == "global.0"
-    finally:
-        app.dependency_overrides.clear()
+    req_payload = {
+        "strategy_id": "m1-seeded-uuid",
+        "reference_dataset_id": "synthetic_underlying_nifty_15m"
+    }
+    response = client.post("/rules/evaluate", json=req_payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["overall_status"] == "TRUE"
+    assert data["reference_series_result"].get("condition_id") == "global.0" or data["reference_series_result"].get("group_id") == "global.0"
 
 
 # 26. Stack Trace Suppression
-def test_stack_trace_suppression():
+def test_stack_trace_suppression(client):
     payload = {
         "strategy": {
             "name": "Test", "timeframe": "15m", "candidate_selection_mode": "FIRST_ELIGIBLE",

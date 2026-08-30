@@ -31,6 +31,7 @@ import {
   AlertTriangle,
   XCircle,
 } from "lucide-react";
+import { AuthHeaderBadge } from "@/components/AuthHeaderBadge";
 
 
 export function DataQualityLab() {
@@ -169,6 +170,7 @@ export function DataQualityLab() {
             <GitCompare className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Replay Comparison</span>
           </Link>
+          <AuthHeaderBadge />
         </nav>
       </header>
 
