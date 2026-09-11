@@ -349,7 +349,7 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
     <div className="bg-slate-950 border border-slate-900 rounded-xl p-4 space-y-4 font-sans">
       <div className="flex justify-between items-center border-b border-slate-900 pb-2">
         <h3 className="font-bold text-xs text-indigo-400 uppercase tracking-wider">Visual Inspection Charts</h3>
-        <span className="text-[10px] text-slate-500 font-mono">TradingView Lightweight Charts • UTC</span>
+        <span className="text-[10px] text-slate-400 font-mono">TradingView Lightweight Charts • UTC</span>
       </div>
 
       {/* Main Candlestick & Overlays Container */}

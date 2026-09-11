@@ -7,6 +7,8 @@ export default defineConfig({
     globals: true,
     fileParallelism: false,
     maxConcurrency: 1,
+    include: ["tests/**/*.test.ts"],
+    exclude: ["e2e/**", "node_modules/**"],
   },
   resolve: {
     alias: {

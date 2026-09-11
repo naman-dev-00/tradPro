@@ -66,7 +66,7 @@ function LoginForm() {
       </div>
 
       {error && (
-        <div role="alert" className="mb-5 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex items-start gap-2">
+        <div id="login-error-alert" role="alert" className="mb-5 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex items-start gap-2">
           <svg className="w-5 h-5 flex-shrink-0 text-rose-400 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
@@ -139,10 +139,10 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <main className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
       <Suspense fallback={<div className="text-slate-400">Loading...</div>}>
         <LoginForm />
       </Suspense>
-    </main>
+    </div>
   );
 }

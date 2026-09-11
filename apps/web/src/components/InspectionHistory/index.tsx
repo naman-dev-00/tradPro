@@ -119,6 +119,7 @@ export function InspectionHistory() {
 
           {/* Status Filter */}
           <select
+            aria-label="Filter by Status"
             value={statusFilter}
             onChange={(e) => handleStatusFilterChange(e.target.value)}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
@@ -130,6 +131,7 @@ export function InspectionHistory() {
 
           {/* Run Type Filter */}
           <select
+            aria-label="Filter by Run Type"
             value={runTypeFilter}
             onChange={(e) => handleRunTypeFilterChange(e.target.value)}
             className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
@@ -166,13 +168,13 @@ export function InspectionHistory() {
             <tbody className="divide-y divide-slate-800/60">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-500">
+                  <td colSpan={7} className="py-12 text-center text-slate-400">
                     Loading inspection history...
                   </td>
                 </tr>
               ) : !data || data.items.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-500">
+                  <td colSpan={7} className="py-12 text-center text-slate-400">
                     No inspection runs found.
                   </td>
                 </tr>
@@ -183,7 +185,7 @@ export function InspectionHistory() {
                     <td className="px-4 py-3 font-medium text-slate-300">{item.run_type}</td>
                     <td className="px-4 py-3">
                       <span className="font-semibold text-slate-200">{item.reference_dataset_id}</span>
-                      <span className="ml-1 text-slate-500">({item.subject_dataset_ids.length} subjects)</span>
+                      <span className="ml-1 text-slate-400">({item.subject_dataset_ids.length} subjects)</span>
                     </td>
                     <td className="px-4 py-3">
                       <span

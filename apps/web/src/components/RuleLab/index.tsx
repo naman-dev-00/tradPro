@@ -186,8 +186,10 @@ export const RuleLabWorkspace: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Strategy Selector */}
             <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1">Strategy</label>
+              <label htmlFor="rule-strategy-select" className="block text-xs font-semibold text-slate-400 mb-1">Strategy</label>
               <select
+                id="rule-strategy-select"
+                aria-label="Strategy"
                 className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 text-slate-200"
                 value={selectedStrategyId}
                 onChange={(e) => setSelectedStrategyId(e.target.value)}
@@ -203,8 +205,10 @@ export const RuleLabWorkspace: React.FC = () => {
 
             {/* Reference Dataset */}
             <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1">Reference Dataset (Global Scope)</label>
+              <label htmlFor="rule-ref-select" className="block text-xs font-semibold text-slate-400 mb-1">Reference Dataset (Global Scope)</label>
               <select
+                id="rule-ref-select"
+                aria-label="Reference Dataset (Global Scope)"
                 className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 text-slate-200"
                 value={selectedRefDatasetId}
                 onChange={(e) => setSelectedRefDatasetId(e.target.value)}
@@ -219,8 +223,10 @@ export const RuleLabWorkspace: React.FC = () => {
 
             {/* Subject Dataset */}
             <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1">Subject Dataset (Candidate Scope)</label>
+              <label htmlFor="rule-subj-select" className="block text-xs font-semibold text-slate-400 mb-1">Subject Dataset (Candidate Scope)</label>
               <select
+                id="rule-subj-select"
+                aria-label="Subject Dataset (Candidate Scope)"
                 className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 text-slate-200"
                 value={selectedSubjDatasetId}
                 onChange={(e) => setSelectedSubjDatasetId(e.target.value)}
@@ -238,12 +244,14 @@ export const RuleLabWorkspace: React.FC = () => {
           {/* Completed Candle Index Slider */}
           <div className="bg-slate-950/60 border border-slate-800/80 p-3.5 rounded-lg space-y-2">
             <div className="flex justify-between items-center text-xs">
-              <span className="font-semibold text-slate-300">Target Completed Candle Index:</span>
+              <label htmlFor="rule-candle-slider" className="font-semibold text-slate-300">Target Completed Candle Index:</label>
               <span className="font-mono text-indigo-400 font-bold bg-indigo-950/80 border border-indigo-500/30 px-2 py-0.5 rounded">
                 Index {candleIndex} / {maxCandleCount - 1}
               </span>
             </div>
             <input
+              id="rule-candle-slider"
+              aria-label="Target Completed Candle Index"
               type="range"
               min="0"
               max={Math.max(0, maxCandleCount - 1)}

@@ -50,8 +50,9 @@ export function PropertiesPanel({ selectedNode, onUpdate }: PropertiesPanelProps
       {type === "strategyRoot" && (
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1">Strategy Name</label>
+            <label htmlFor="strategy-name-input" className="block text-xs font-semibold text-slate-400 mb-1">Strategy Name</label>
             <input
+              id="strategy-name-input"
               type="text"
               className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500 text-slate-200"
               value={data.name || ""}

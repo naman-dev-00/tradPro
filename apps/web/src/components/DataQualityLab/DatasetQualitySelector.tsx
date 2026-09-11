@@ -105,7 +105,7 @@ export function DatasetQualitySelector({
                 <span className="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-[10px] text-slate-300">
                   {ds.timeframe}
                 </span>
-                <span className="font-mono text-[10px] text-slate-500 ml-auto">
+                <span className="font-mono text-[10px] text-slate-400 ml-auto">
                   {ds.summary.completed_rows} rows
                 </span>
               </div>

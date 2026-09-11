@@ -200,7 +200,7 @@ export function DataQualityLab() {
             onClick={() => setIsBatchMode(false)}
             className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-sky-500 ${
               !isBatchMode
-                ? "bg-emerald-600 text-white shadow-md shadow-emerald-950/40"
+                ? "bg-emerald-700 text-white shadow-md shadow-emerald-950/40"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
@@ -218,7 +218,7 @@ export function DataQualityLab() {
             }}
             className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-sky-500 ${
               isBatchMode
-                ? "bg-emerald-600 text-white shadow-md shadow-emerald-950/40"
+                ? "bg-emerald-700 text-white shadow-md shadow-emerald-950/40"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
@@ -268,7 +268,7 @@ export function DataQualityLab() {
             <a
               href={getDataQualityExportUrl(activeReport.dataset_id)}
               download={`data_quality_${activeReport.dataset_id}.json`}
-              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md shadow-emerald-950/30 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shadow-md shadow-emerald-950/30 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400"
             >
               <Download className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Export JSON Report</span>
@@ -293,7 +293,7 @@ export function DataQualityLab() {
               type="button"
               onClick={handleRunBatchAudit}
               disabled={loading || selectedBatchIds.length === 0}
-              className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold shadow-md focus:outline-none focus:ring-2 focus:ring-sky-400"
+              className="px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold shadow-md focus:outline-none focus:ring-2 focus:ring-sky-400"
             >
               Run Batch Audit ({selectedBatchIds.length} datasets)
             </button>

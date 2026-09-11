@@ -49,18 +49,20 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
     headers.set("Content-Type", "application/json");
   }
 
-  // Attach CSRF token for non-safe methods
+  // Attach CSRF token for non-safe methods if not already set
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-    let csrf = getCsrfTokenFromCookie();
-    if (!csrf) {
-      try {
-        csrf = await fetchCsrfToken();
-      } catch (err) {
-        console.warn("Could not fetch CSRF token before mutation:", err);
+    if (!headers.has("X-CSRF-Token")) {
+      let csrf = getCsrfTokenFromCookie();
+      if (!csrf) {
+        try {
+          csrf = await fetchCsrfToken();
+        } catch (err) {
+          console.warn("Could not fetch CSRF token before mutation:", err);
+        }
       }
-    }
-    if (csrf && !headers.has("X-CSRF-Token")) {
-      headers.set("X-CSRF-Token", csrf);
+      if (csrf) {
+        headers.set("X-CSRF-Token", csrf);
+      }
     }
   }
 
@@ -87,10 +89,7 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 export async function loginUser(username_or_email: string, password: string): Promise<User> {
-  let csrf = getCsrfTokenFromCookie();
-  if (!csrf) {
-    csrf = await fetchCsrfToken();
-  }
+  const csrf = await fetchCsrfToken();
 
   const res = await apiFetch("/api/v1/auth/login", {
     method: "POST",
