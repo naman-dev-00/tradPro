@@ -839,3 +839,345 @@ export async function auditDatasetsBatch(datasetIds: string[]): Promise<DatasetA
 export function getDataQualityExportUrl(datasetId: string): string {
   return `${API_BASE_URL}/api/v1/data-quality/datasets/${datasetId}/export`;
 }
+
+// --- Milestone 6A: Paper Trading Runtime, OMS & Risk Engine ---
+
+export interface PaperAccount {
+  id: string;
+  owner_id: string;
+  name: string;
+  currency: string;
+  total_cash: string;
+  reserved_cash: string;
+  available_cash: string;
+  is_active: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountLedgerEntry {
+  id: string;
+  account_id: string;
+  sequence_number: number;
+  entry_type: string;
+  amount: string;
+  balance_after: string;
+  order_id?: string | null;
+  fill_id?: string | null;
+  reason_code: string;
+  created_at: string;
+}
+
+export interface ActionRuleMapping {
+  mapping_id: string;
+  rule_target: "GLOBAL" | "CANDIDATE";
+  trigger_status: "ON_TRUE" | "ON_FALSE";
+  instrument_id: string;
+  side: "BUY" | "SELL";
+  order_type: "MARKET" | "LIMIT";
+  quantity: string | number;
+  limit_price?: string | number | null;
+  time_in_force: "DAY" | "GTC";
+  cooldown_bars?: number;
+  intent_type: "ENTRY" | "EXIT" | "REDUCE" | "REVERSE";
+}
+
+export interface StrategyActionPolicy {
+  id: string;
+  owner_id: string;
+  strategy_id: string;
+  name: string;
+  version: number;
+  payload: {
+    entry_mapping: ActionRuleMapping;
+    exit_mapping?: ActionRuleMapping;
+    position_exists_behavior: "IGNORE" | "REJECT" | "SCALE" | "REVERSE";
+    max_entries_per_day: number;
+  };
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RiskPolicy {
+  id: string;
+  owner_id: string;
+  name: string;
+  version: number;
+  payload: Record<string, any>;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategyRuntime {
+  id: string;
+  owner_id: string;
+  strategy_id: string;
+  action_policy_id: string;
+  risk_policy_id: string;
+  account_id: string;
+  status: "DRAFT" | "READY" | "RUNNING" | "PAUSED" | "HALTED" | "STOPPED" | "ERROR";
+  trading_mode: string;
+  dataset_id: string;
+  timeframe: string;
+  last_processed_candle_timestamp?: string | null;
+  consecutive_errors: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrderEvent {
+  id: string;
+  sequence_number: number;
+  previous_status: string;
+  new_status: string;
+  actor: string;
+  reason_code: string;
+  metadata_json?: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface Order {
+  id: string;
+  owner_id: string;
+  runtime_id: string;
+  intent_id: string;
+  account_id: string;
+  order_sequence_number: number;
+  instrument_id: string;
+  side: "BUY" | "SELL";
+  order_type: "MARKET" | "LIMIT";
+  quantity: string;
+  limit_price?: string | null;
+  filled_quantity: string;
+  status: string;
+  version: number;
+  events?: OrderEvent[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Fill {
+  id: string;
+  order_id: string;
+  account_id: string;
+  instrument_id: string;
+  side: "BUY" | "SELL";
+  quantity: string;
+  price: string;
+  fee: string;
+  candle_timestamp: string;
+  created_at: string;
+}
+
+export interface PaperPosition {
+  id: string;
+  account_id: string;
+  instrument_id: string;
+  net_quantity: string;
+  average_entry_price: string;
+  cost_basis: string;
+  gross_realized_pnl: string;
+  total_fees: string;
+  net_realized_pnl: string;
+  last_mark_price: string;
+  unrealized_pnl: string;
+  updated_at: string;
+}
+
+export interface KillSwitchStatus {
+  global_active: boolean;
+  global_engaged_at?: string | null;
+  global_reason?: string | null;
+  user_active: boolean;
+  user_engaged_at?: string | null;
+  user_reason?: string | null;
+}
+
+export async function fetchPaperAccounts(): Promise<PaperAccount[]> {
+  const res = await apiFetch("/api/v1/paper/accounts");
+  if (!res.ok) throw new Error("Failed to fetch paper accounts");
+  return res.json();
+}
+
+export async function createPaperAccount(name: string, initial_balance: string | number, currency: string = "INR"): Promise<PaperAccount> {
+  const res = await apiFetch("/api/v1/paper/accounts", {
+    method: "POST",
+    body: JSON.stringify({ name, initial_balance, currency }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to create paper account");
+  }
+  return res.json();
+}
+
+export async function fetchAccountLedger(accountId: string): Promise<AccountLedgerEntry[]> {
+  const res = await apiFetch(`/api/v1/paper/accounts/${accountId}/ledger`);
+  if (!res.ok) throw new Error("Failed to fetch account ledger");
+  return res.json();
+}
+
+export async function fetchActionPolicies(): Promise<StrategyActionPolicy[]> {
+  const res = await apiFetch("/api/v1/paper/action-policies");
+  if (!res.ok) throw new Error("Failed to fetch action policies");
+  return res.json();
+}
+
+export async function createActionPolicy(policyData: any): Promise<StrategyActionPolicy> {
+  const res = await apiFetch("/api/v1/paper/action-policies", {
+    method: "POST",
+    body: JSON.stringify(policyData),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to create action policy");
+  }
+  return res.json();
+}
+
+export async function fetchPaperRuntimes(): Promise<StrategyRuntime[]> {
+  const res = await apiFetch("/api/v1/paper/runtimes");
+  if (!res.ok) throw new Error("Failed to fetch paper runtimes");
+  return res.json();
+}
+
+export async function createPaperRuntime(data: {
+  strategy_id: string;
+  account_id: string;
+  dataset_id: string;
+  timeframe?: string;
+  action_policy_id?: string;
+  risk_policy_id?: string;
+}): Promise<StrategyRuntime> {
+  const res = await apiFetch("/api/v1/paper/runtimes", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to create runtime");
+  }
+  return res.json();
+}
+
+export async function validatePaperRuntime(runtimeId: string): Promise<{ valid: boolean; status?: string; errors?: string[] }> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/validate`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to validate runtime");
+  return res.json();
+}
+
+export async function startPaperRuntime(runtimeId: string): Promise<StrategyRuntime> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/start`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to start runtime");
+  }
+  return res.json();
+}
+
+export async function pausePaperRuntime(runtimeId: string): Promise<StrategyRuntime> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/pause`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to pause runtime");
+  return res.json();
+}
+
+export async function resumePaperRuntime(runtimeId: string): Promise<StrategyRuntime> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/resume`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to resume runtime");
+  return res.json();
+}
+
+export async function stopPaperRuntime(runtimeId: string): Promise<StrategyRuntime> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/stop`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to stop runtime");
+  return res.json();
+}
+
+export async function stepPaperRuntime(runtimeId: string, stepCount: number = 1): Promise<{
+  runtime_id: string;
+  status: string;
+  last_candle_timestamp: string;
+  steps_executed: number;
+  fills_executed: number;
+  intents_created: number;
+}> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/step`, {
+    method: "POST",
+    body: JSON.stringify({ step_count: stepCount }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to step runtime");
+  }
+  return res.json();
+}
+
+export async function fetchRuntimeEvents(runtimeId: string): Promise<OrderEvent[]> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}/events`);
+  if (!res.ok) throw new Error("Failed to fetch runtime events");
+  return res.json();
+}
+
+export async function fetchPaperOrders(runtimeId?: string): Promise<Order[]> {
+  const path = runtimeId ? `/api/v1/paper/orders?runtime_id=${runtimeId}` : "/api/v1/paper/orders";
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error("Failed to fetch orders");
+  return res.json();
+}
+
+export async function cancelPaperOrder(orderId: string): Promise<Order> {
+  const res = await apiFetch(`/api/v1/paper/orders/${orderId}/cancel`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to cancel order");
+  }
+  return res.json();
+}
+
+export async function fetchPaperPositions(accountId?: string): Promise<PaperPosition[]> {
+  const path = accountId ? `/api/v1/paper/positions?account_id=${accountId}` : "/api/v1/paper/positions";
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error("Failed to fetch positions");
+  return res.json();
+}
+
+export async function fetchPaperFills(accountId?: string): Promise<Fill[]> {
+  const path = accountId ? `/api/v1/paper/fills?account_id=${accountId}` : "/api/v1/paper/fills";
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error("Failed to fetch fills");
+  return res.json();
+}
+
+export async function fetchKillSwitchStatus(): Promise<KillSwitchStatus> {
+  const res = await apiFetch("/api/v1/paper/kill-switch");
+  if (!res.ok) throw new Error("Failed to fetch kill switch status");
+  return res.json();
+}
+
+export async function engageKillSwitch(scope: "GLOBAL" | "USER", reason: string): Promise<any> {
+  const res = await apiFetch("/api/v1/paper/kill-switch", {
+    method: "POST",
+    body: JSON.stringify({ scope, reason }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to engage kill switch");
+  }
+  return res.json();
+}
+
+export async function resetKillSwitch(scope: "GLOBAL" | "USER", reason: string): Promise<any> {
+  const res = await apiFetch("/api/v1/paper/kill-switch/reset", {
+    method: "POST",
+    body: JSON.stringify({ scope, reason }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to reset kill switch");
+  }
+  return res.json();
+}

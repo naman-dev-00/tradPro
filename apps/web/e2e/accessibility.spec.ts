@@ -14,6 +14,7 @@ test.describe("Accessibility (Axe-Core & Behavioral) E2E", () => {
     { path: "/inspection-history", title: "Inspection History", role: "editor" },
     { path: "/replay-comparison-lab", title: "Replay Comparison Lab", role: "editor" },
     { path: "/data-quality-lab", title: "Dataset Quality Lab", role: "editor" },
+    { path: "/paper-trading-lab", title: "Paper Trading Runtime & OMS Lab", role: "editor" },
     { path: "/_not_found_test_route", title: "404 Not Found Page", role: null },
   ];
 

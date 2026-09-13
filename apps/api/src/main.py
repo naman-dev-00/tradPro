@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import Base, engine, verify_database_connection
 from src.middleware.observability import ObservabilityMiddleware
-from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality
+from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,6 +45,7 @@ app.include_router(rules.rules_router)
 app.include_router(multi_series.router)
 app.include_router(replays.router)
 app.include_router(data_quality.router)
+app.include_router(paper.router)
 
 @app.get("/")
 def read_root():

@@ -48,16 +48,48 @@ def get_db_url() -> str:
 
     raise RuntimeError("DATABASE_URL environment variable is required in staging and production environments.")
 
-def create_active_engine():
-    db_url = get_db_url()
+def create_db_engine(db_url: str):
     masked_url = mask_db_url(db_url)
     connect_args = {}
 
     if db_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        connect_args["timeout"] = 30.0
 
+    eng = create_engine(db_url, connect_args=connect_args)
+
+    if db_url.startswith("sqlite"):
+        from sqlalchemy import event
+
+        @event.listens_for(eng, "connect")
+        def do_connect(dbapi_connection, connection_record):
+            # disable pysqlite's emitting of the default BEGIN statement
+            dbapi_connection.isolation_level = None
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        @event.listens_for(eng, "begin")
+        def do_begin(conn):
+            # Check if this transaction is explicitly marked read_only
+            if conn.info.get("read_only", False) or conn.get_execution_options().get("read_only", False):
+                conn.exec_driver_sql("BEGIN")
+            else:
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        @event.listens_for(eng, "checkin")
+        def do_checkin(dbapi_connection, connection_record):
+            # Clear connection info to ensure read_only cannot leak across pooled checkouts
+            if connection_record and hasattr(connection_record, "info"):
+                connection_record.info.pop("read_only", None)
+
+    return eng
+
+def create_active_engine():
+    db_url = get_db_url()
+    masked_url = mask_db_url(db_url)
     logger.info(f"Initialized database engine for environment '{settings.APP_ENV}' with database: {masked_url}")
-    return create_engine(db_url, connect_args=connect_args)
+    return create_db_engine(db_url)
 
 engine = create_active_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -81,6 +113,19 @@ def verify_database_connection():
 
 def get_db():
     db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def get_read_only_db():
+    """
+    Read-only database dependency for GET requests:
+    - Sets execution_options(read_only=True) on the engine so SQLite emits standard BEGIN without write reservation.
+    - Connection checkin listener and session close ensure read_only flag is never leaked
+      to subsequent write requests on pooled connections.
+    """
+    db = SessionLocal(bind=engine.execution_options(read_only=True))
     try:
         yield db
     finally:

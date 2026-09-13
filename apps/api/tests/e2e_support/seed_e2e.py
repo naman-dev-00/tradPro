@@ -177,10 +177,24 @@ def seed_e2e_database() -> Dict[str, Any]:
         db.add(starter_strategy)
         db.flush()
 
-        manifest["strategies"]["starter"] = {
-            "id": str(starter_strategy.id),
-            "owner_id": str(editor_user.id),
-            "name": starter_strategy.name
+        # Create starter paper account for editor
+        from decimal import Decimal
+        from src.services.paper_service import PaperService
+        starter_account = PaperService.create_account(
+            db,
+            owner_id=editor_user.id,
+            name="Primary Paper Account",
+            initial_balance=Decimal("100000.00"),
+            currency="INR"
+        )
+
+        manifest["accounts"] = {
+            "starter": {
+                "id": str(starter_account.id),
+                "owner_id": str(editor_user.id),
+                "name": starter_account.name,
+                "available_cash": "100000.00"
+            }
         }
 
         db.commit()

@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, ForeignKey, text
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, ForeignKey, ForeignKeyConstraint, text, BigInteger, Integer
 from src.database import Base, UTCDateTime
 
 LEGACY_PRINCIPAL_ID = "00000000-0000-0000-0000-000000000000"
@@ -52,6 +52,10 @@ class Strategy(Base):
     payload = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("id", "owner_id", name="uq_strategies_id_owner"),
+    )
 
     @property
     def action(self):
@@ -120,4 +124,367 @@ class InspectionRun(Base):
             name="ck_inspection_runs_failed_fields"
         ),
         UniqueConstraint("owner_id", "completed_fingerprint", name="uq_inspection_runs_owner_completed_fingerprint"),
+    )
+
+
+class PaperAccount(Base):
+    __tablename__ = "paper_accounts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    currency = Column(String(10), nullable=False, default="INR")
+    total_cash_units = Column(BigInteger, nullable=False, default=0)
+    reserved_cash_units = Column(BigInteger, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("total_cash_units >= 0", name="ck_paper_accounts_total_cash_nonneg"),
+        CheckConstraint("reserved_cash_units >= 0 AND reserved_cash_units <= total_cash_units", name="ck_paper_accounts_reserved_cash_bound"),
+        CheckConstraint("version > 0", name="ck_paper_accounts_version_pos"),
+        UniqueConstraint("id", "owner_id", name="uq_paper_accounts_id_owner"),
+    )
+
+
+class AccountLedgerEntry(Base):
+    __tablename__ = "account_ledger_entries"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    account_id = Column(String(36), ForeignKey("paper_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    sequence_number = Column(BigInteger, nullable=False)
+    entry_type = Column(String(30), nullable=False)
+    settled_cash_delta_units = Column(BigInteger, nullable=False, default=0)
+    reserved_cash_delta_units = Column(BigInteger, nullable=False, default=0)
+    settled_cash_after_units = Column(BigInteger, nullable=False, default=0)
+    reserved_cash_after_units = Column(BigInteger, nullable=False, default=0)
+    amount_units = Column(BigInteger, nullable=False, default=0)
+    balance_after_units = Column(BigInteger, nullable=False, default=0)
+    order_id = Column(String(36), nullable=True)
+    fill_id = Column(String(36), nullable=True)
+    reason_code = Column(String(50), nullable=False)
+    idempotency_key = Column(String(64), nullable=False)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("sequence_number > 0", name="ck_account_ledger_seq_pos"),
+        CheckConstraint("settled_cash_after_units >= 0", name="ck_account_ledger_settled_after_nonneg"),
+        CheckConstraint("reserved_cash_after_units >= 0", name="ck_account_ledger_reserved_after_nonneg"),
+        UniqueConstraint("account_id", "sequence_number", name="uq_account_ledger_account_seq"),
+        UniqueConstraint("account_id", "idempotency_key", name="uq_account_ledger_account_idempotency"),
+        ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_account_ledger_account_owner"),
+    )
+
+
+class StrategyActionPolicy(Base):
+    __tablename__ = "strategy_action_policies"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    strategy_id = Column(String(36), ForeignKey("strategies.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    payload = Column(JSON, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("version > 0", name="ck_action_policies_version_pos"),
+        UniqueConstraint("strategy_id", "version", name="uq_action_policies_strategy_version"),
+        UniqueConstraint("id", "owner_id", name="uq_action_policies_id_owner"),
+        ForeignKeyConstraint(["strategy_id", "owner_id"], ["strategies.id", "strategies.owner_id"], name="fk_action_policies_strategy_owner"),
+    )
+
+
+class RiskPolicy(Base):
+    __tablename__ = "risk_policies"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    payload = Column(JSON, nullable=False)
+    is_default = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("version > 0", name="ck_risk_policies_version_pos"),
+        UniqueConstraint("owner_id", "name", "version", name="uq_risk_policies_owner_name_version"),
+        UniqueConstraint("id", "owner_id", name="uq_risk_policies_id_owner"),
+    )
+
+
+class StrategyRuntime(Base):
+    __tablename__ = "strategy_runtimes"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    strategy_id = Column(String(36), nullable=False, index=True)
+    action_policy_id = Column(String(36), nullable=False, index=True)
+    risk_policy_id = Column(String(36), nullable=False, index=True)
+    account_id = Column(String(36), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="DRAFT")
+    trading_mode = Column(String(10), nullable=False, default="PAPER")
+    dataset_id = Column(String(255), nullable=False)
+    timeframe = Column(String(50), nullable=False)
+    strategy_snapshot = Column(JSON, nullable=True)
+    action_policy_snapshot = Column(JSON, nullable=True)
+    risk_policy_snapshot = Column(JSON, nullable=True)
+    instrument_spec_snapshot = Column(JSON, nullable=True)
+    fee_model_snapshot = Column(JSON, nullable=True)
+    slippage_model_snapshot = Column(JSON, nullable=True)
+    dataset_checksum = Column(String(64), nullable=True)
+    manifest_version = Column(String(50), nullable=False, default="1.0.0")
+    engine_version = Column(String(50), nullable=False, default="1.0.0")
+    runtime_schema_version = Column(String(50), nullable=False, default="1.0.0")
+    last_processed_candle_timestamp = Column(UTCDateTime, nullable=True)
+    consecutive_errors = Column(Integer, nullable=False, default=0)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('DRAFT', 'READY', 'RUNNING', 'PAUSED', 'HALTED', 'STOPPED', 'COMPLETED', 'ERROR')", name="ck_strategy_runtimes_status"),
+        CheckConstraint("trading_mode = 'PAPER'", name="ck_strategy_runtimes_trading_mode"),
+        CheckConstraint("version > 0", name="ck_strategy_runtimes_version_pos"),
+        CheckConstraint("consecutive_errors >= 0", name="ck_strategy_runtimes_errors_nonneg"),
+        UniqueConstraint("id", "owner_id", name="uq_strategy_runtimes_id_owner"),
+        ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_strategy_runtimes_account_owner"),
+        ForeignKeyConstraint(["strategy_id", "owner_id"], ["strategies.id", "strategies.owner_id"], name="fk_strategy_runtimes_strategy_owner"),
+        ForeignKeyConstraint(["action_policy_id", "owner_id"], ["strategy_action_policies.id", "strategy_action_policies.owner_id"], name="fk_strategy_runtimes_action_policy_owner"),
+        ForeignKeyConstraint(["risk_policy_id", "owner_id"], ["risk_policies.id", "risk_policies.owner_id"], name="fk_strategy_runtimes_risk_policy_owner"),
+    )
+
+
+class OrderIntent(Base):
+    __tablename__ = "order_intents"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    runtime_id = Column(String(36), nullable=False, index=True)
+    action_mapping_id = Column(String(50), nullable=False)
+    requested_instrument_id = Column(String(255), nullable=False)
+    resolved_instrument_id = Column(String(255), nullable=False)
+    intent_type = Column(String(20), nullable=False)
+    reduce_only = Column(Boolean, nullable=False, default=False)
+    side = Column(String(10), nullable=False)
+    quantity_units = Column(BigInteger, nullable=False)
+    order_type = Column(String(10), nullable=False)
+    limit_price_units = Column(BigInteger, nullable=True)
+    time_in_force = Column(String(10), nullable=False)
+    source_candle_timestamp = Column(UTCDateTime, nullable=False)
+    source_evaluation_fingerprint = Column(String(64), nullable=False)
+    trigger_event_key = Column(String(64), nullable=False)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("intent_type IN ('ENTRY', 'EXIT', 'REDUCE', 'REVERSE')", name="ck_order_intents_type"),
+        CheckConstraint("side IN ('BUY', 'SELL')", name="ck_order_intents_side"),
+        CheckConstraint("quantity_units > 0", name="ck_order_intents_qty_pos"),
+        CheckConstraint("order_type IN ('MARKET', 'LIMIT')", name="ck_order_intents_order_type"),
+        CheckConstraint("time_in_force IN ('DAY', 'GTC')", name="ck_order_intents_tif"),
+        CheckConstraint("order_type != 'LIMIT' OR (limit_price_units IS NOT NULL AND limit_price_units > 0)", name="ck_order_intents_limit_price_pos"),
+        CheckConstraint("order_type != 'MARKET' OR limit_price_units IS NULL", name="ck_order_intents_market_no_price"),
+        UniqueConstraint("runtime_id", "trigger_event_key", name="uq_order_intents_trigger_event"),
+        UniqueConstraint("id", "owner_id", name="uq_order_intents_id_owner"),
+        ForeignKeyConstraint(["runtime_id", "owner_id"], ["strategy_runtimes.id", "strategy_runtimes.owner_id"], name="fk_order_intents_runtime_owner"),
+    )
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    runtime_id = Column(String(36), nullable=False, index=True)
+    intent_id = Column(String(36), nullable=False, unique=True, index=True)
+    account_id = Column(String(36), nullable=False, index=True)
+    order_sequence_number = Column(BigInteger, nullable=False)
+    instrument_id = Column(String(255), nullable=False)
+    side = Column(String(10), nullable=False)
+    order_type = Column(String(10), nullable=False)
+    quantity_units = Column(BigInteger, nullable=False)
+    limit_price_units = Column(BigInteger, nullable=True)
+    filled_quantity_units = Column(BigInteger, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="CREATED")
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("side IN ('BUY', 'SELL')", name="ck_orders_side"),
+        CheckConstraint("order_type IN ('MARKET', 'LIMIT')", name="ck_orders_order_type"),
+        CheckConstraint("quantity_units > 0", name="ck_orders_qty_pos"),
+        CheckConstraint("order_sequence_number > 0", name="ck_orders_seq_pos"),
+        CheckConstraint("filled_quantity_units >= 0 AND filled_quantity_units <= quantity_units", name="ck_orders_filled_bounds"),
+        CheckConstraint("status IN ('CREATED', 'ACCEPTED', 'PARTIALLY_FILLED', 'FILLED', 'CANCEL_PENDING', 'CANCELLED', 'REJECTED', 'EXPIRED', 'RISK_REJECTED', 'ERROR')", name="ck_orders_status"),
+        CheckConstraint("order_type != 'LIMIT' OR (limit_price_units IS NOT NULL AND limit_price_units > 0)", name="ck_orders_limit_requires_price"),
+        CheckConstraint("order_type != 'MARKET' OR limit_price_units IS NULL", name="ck_orders_market_forbids_price"),
+        CheckConstraint("version > 0", name="ck_orders_version_pos"),
+        UniqueConstraint("runtime_id", "order_sequence_number", name="uq_orders_runtime_seq"),
+        UniqueConstraint("id", "owner_id", name="uq_orders_id_owner"),
+        ForeignKeyConstraint(["runtime_id", "owner_id"], ["strategy_runtimes.id", "strategy_runtimes.owner_id"], name="fk_orders_runtime_owner"),
+        ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_orders_account_owner"),
+        ForeignKeyConstraint(["intent_id", "owner_id"], ["order_intents.id", "order_intents.owner_id"], name="fk_orders_intent_owner"),
+    )
+
+
+class OrderEvent(Base):
+    __tablename__ = "order_events"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    order_id = Column(String(36), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence_number = Column(Integer, nullable=False)
+    previous_status = Column(String(20), nullable=False)
+    new_status = Column(String(20), nullable=False)
+    actor = Column(String(50), nullable=False)
+    reason_code = Column(String(50), nullable=False)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("sequence_number > 0", name="ck_order_events_seq_pos"),
+        UniqueConstraint("order_id", "sequence_number", name="uq_order_events_order_seq"),
+    )
+
+
+class Fill(Base):
+    __tablename__ = "fills"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    order_id = Column(String(36), nullable=False, index=True)
+    account_id = Column(String(36), nullable=False, index=True)
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    instrument_id = Column(String(255), nullable=False)
+    side = Column(String(10), nullable=False)
+    quantity_units = Column(BigInteger, nullable=False)
+    price_units = Column(BigInteger, nullable=False)
+    fee_units = Column(BigInteger, nullable=False, default=0)
+    candle_timestamp = Column(UTCDateTime, nullable=False)
+    fill_idempotency_key = Column(String(64), nullable=False, unique=True, index=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("quantity_units > 0", name="ck_fills_qty_pos"),
+        CheckConstraint("price_units > 0", name="ck_fills_price_pos"),
+        CheckConstraint("fee_units >= 0", name="ck_fills_fee_nonneg"),
+        UniqueConstraint("id", "owner_id", name="uq_fills_id_owner"),
+        ForeignKeyConstraint(["order_id", "owner_id"], ["orders.id", "orders.owner_id"], name="fk_fills_order_owner"),
+        ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_fills_account_owner"),
+    )
+
+
+class PaperPosition(Base):
+    __tablename__ = "paper_positions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(String(36), nullable=False, index=True)
+    instrument_id = Column(String(255), nullable=False)
+    net_quantity_units = Column(BigInteger, nullable=False, default=0)
+    average_entry_price_units = Column(BigInteger, nullable=False, default=0)
+    cost_basis_units = Column(BigInteger, nullable=False, default=0)
+    gross_realized_pnl_units = Column(BigInteger, nullable=False, default=0)
+    total_fees_units = Column(BigInteger, nullable=False, default=0)
+    net_realized_pnl_units = Column(BigInteger, nullable=False, default=0)
+    last_mark_price_units = Column(BigInteger, nullable=False, default=0)
+    unrealized_pnl_units = Column(BigInteger, nullable=False, default=0)
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("cost_basis_units >= 0", name="ck_paper_positions_cost_basis_nonneg"),
+        CheckConstraint("total_fees_units >= 0", name="ck_paper_positions_total_fees_nonneg"),
+        UniqueConstraint("account_id", "instrument_id", name="uq_paper_positions_account_instrument"),
+        ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_paper_positions_account_owner"),
+    )
+
+
+class KillSwitch(Base):
+    __tablename__ = "kill_switches"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    target_key = Column(String(50), nullable=False, unique=True, index=True)
+    scope = Column(String(20), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=False)
+    engaged_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    engaged_at = Column(UTCDateTime, nullable=True)
+    reason = Column(String(500), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('GLOBAL', 'USER')", name="ck_kill_switches_scope"),
+        CheckConstraint("scope != 'GLOBAL' OR user_id IS NULL", name="ck_kill_switches_global_no_user"),
+        CheckConstraint("scope != 'USER' OR user_id IS NOT NULL", name="ck_kill_switches_user_requires_user"),
+        UniqueConstraint("target_key", name="uq_kill_switches_target_key"),
+        UniqueConstraint("scope", "user_id", name="uq_kill_switches_scope_user"),
+    )
+
+
+class ApiIdempotencyRecord(Base):
+    __tablename__ = "api_idempotency_records"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    key = Column(String(64), nullable=False)
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    request_hash = Column(String(64), nullable=False)
+    response_status = Column(Integer, nullable=False)
+    response_body = Column(JSON, nullable=False)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "key", name="uq_api_idempotency_owner_key"),
+    )
+
+
+class RuntimeEvent(Base):
+    __tablename__ = "runtime_events"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    runtime_id = Column(String(36), nullable=False, index=True)
+    sequence_number = Column(Integer, nullable=False)
+    previous_status = Column(String(20), nullable=False)
+    new_status = Column(String(20), nullable=False)
+    actor = Column(String(50), nullable=False)
+    reason_code = Column(String(50), nullable=False)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("sequence_number > 0", name="ck_runtime_events_seq_pos"),
+        UniqueConstraint("runtime_id", "sequence_number", name="uq_runtime_events_runtime_seq"),
+    )
+
+
+class ActionDecision(Base):
+    __tablename__ = "action_decisions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    runtime_id = Column(String(36), nullable=False, index=True)
+    candle_timestamp = Column(UTCDateTime, nullable=False)
+    action_mapping_id = Column(String(50), nullable=False)
+    decision = Column(String(20), nullable=False)  # EXECUTED or IGNORED
+    reason_code = Column(String(50), nullable=False)
+    intent_id = Column(String(36), nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
+class RiskDecision(Base):
+    __tablename__ = "risk_decisions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    intent_id = Column(String(36), nullable=False, index=True)
+    passed = Column(Boolean, nullable=False)
+    reason_code = Column(String(50), nullable=False)
+    message = Column(String(500), nullable=False)
+    metrics_json = Column(JSON, nullable=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    __table_args__ = (
+        ForeignKeyConstraint(["owner_id", "intent_id"], ["order_intents.owner_id", "order_intents.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_risk_decisions_intent_owner"),
     )

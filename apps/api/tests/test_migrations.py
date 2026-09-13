@@ -130,7 +130,7 @@ def test_alembic_revision_identifiers_and_graph_invariants():
 
     # 1. Alembic has exactly one head revision
     assert len(heads) == 1
-    assert heads[0] == "0003_auth_ownership"
+    assert heads[0] == "0004_paper_runtime"
 
     # 2. Every revision identifier is non-empty, <= 32 chars, and down_revision resolves
     for script in script_directory.walk_revisions():

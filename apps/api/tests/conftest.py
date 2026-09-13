@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from src.database import Base, get_db
+from src.database import Base, get_db, get_read_only_db
 from src.main import app
 from src.models import User
 from src.auth.security import hash_password
@@ -70,6 +70,7 @@ def client_fixture(session, test_user):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_read_only_db] = override_get_db
 
     # Create session for default authenticated test user
     sess_rec, raw_sess, raw_csrf = create_session(session, test_user)
@@ -92,6 +93,7 @@ def unauth_client_fixture(session):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_read_only_db] = override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
