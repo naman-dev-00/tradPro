@@ -47,7 +47,15 @@ def validate_disposable_e2e_environment(
 
     # 3. Extract and resolve database file path
     db_file_str = database_url[len("sqlite:///"):]
-    db_file_path = pathlib.Path(db_file_str).resolve()
+    db_file_path = pathlib.Path(db_file_str)
+    if not db_file_path.is_absolute():
+        posix_candidate = pathlib.Path("/" + db_file_str).resolve()
+        try:
+            posix_candidate.relative_to(temp_dir_path)
+            db_file_path = posix_candidate
+        except ValueError:
+            pass
+    db_file_path = db_file_path.resolve()
 
     # 4. Check that db file is strictly inside the temp directory
     try:
