@@ -165,11 +165,12 @@ def test_alembic_migration_postgres_compatibility():
     assert "user_sessions" in tables
     assert "inspection_runs" in tables
     assert "strategies" in tables
+    assert "paper_accounts" in tables
 
     from alembic.migration import MigrationContext
     with engine.connect() as conn:
         ctx = MigrationContext.configure(conn)
         current_rev = ctx.get_current_revision()
-        assert current_rev == "0003_auth_ownership"
+        assert current_rev == "0004_paper_runtime"
 
     engine.dispose()
