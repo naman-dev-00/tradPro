@@ -14,6 +14,7 @@ test.describe("Multi-Viewport Responsive Verification E2E", () => {
     { path: "/inspection-history", name: "Inspection History", auth: true },
     { path: "/replay-comparison-lab", name: "Replay Comparison Lab", auth: true },
     { path: "/data-quality-lab", name: "Dataset Quality Lab", auth: true },
+    { path: "/paper-trading-lab", name: "Paper Trading Runtime & OMS Lab", auth: true },
   ];
 
   for (const viewport of Object.values(VIEWPORTS)) {
