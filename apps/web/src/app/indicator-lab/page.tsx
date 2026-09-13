@@ -48,9 +48,9 @@ export default function IndicatorLabPage() {
       </header>
 
       {/* Lab Interface */}
-      <main className="flex-1">
+      <div className="flex-1">
         <IndicatorLab />
-      </main>
+      </div>
     </div>
   );
 }

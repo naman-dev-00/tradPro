@@ -260,6 +260,7 @@ export function HistoricalReplayLab() {
                 value={startTimestamp}
                 onChange={(e) => setStartTimestamp(e.target.value)}
                 placeholder="Start UTC"
+                aria-label="Start UTC timestamp"
                 className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
               />
               <input
@@ -267,11 +268,13 @@ export function HistoricalReplayLab() {
                 value={endTimestamp}
                 onChange={(e) => setEndTimestamp(e.target.value)}
                 placeholder="End UTC"
+                aria-label="End UTC timestamp"
                 className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
               />
               <select
                 value={samplingStep}
                 onChange={(e) => setSamplingStep(parseInt(e.target.value, 10))}
+                aria-label="Sampling Step"
                 className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
               >
                 <option value={1}>Step 1</option>
@@ -286,7 +289,7 @@ export function HistoricalReplayLab() {
         <div className="mt-6">
           <label className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
             <span>Subject Datasets ({selectedSubjectIds.length}/20 selected)</span>
-            <span className="text-slate-500">Select 1 to 20 candidate options</span>
+            <span className="text-slate-400">Select 1 to 20 candidate options</span>
           </label>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {subjectDatasets.map((ds) => {
@@ -308,7 +311,7 @@ export function HistoricalReplayLab() {
                   />
                   <div className="text-xs">
                     <span className="font-semibold text-slate-200">{ds.display_name}</span>
-                    <span className="ml-2 font-mono text-[10px] text-slate-500">
+                    <span className="ml-2 font-mono text-[10px] text-slate-400">
                       ({ds.completed_candle_count} candles)
                     </span>
                   </div>

@@ -72,7 +72,7 @@ export default function Dashboard() {
       </header>
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
         {/* Banner Section */}
         <div className="flex justify-between items-center mb-8 border-b border-slate-900 pb-5">
           <div>
@@ -134,7 +134,7 @@ export default function Dashboard() {
                         <Clock size={10} />
                         {strategy.timeframe}
                       </span>
-                      <span className="text-[10px] text-slate-500 font-mono font-medium">
+                      <span className="text-[10px] text-slate-400 font-mono font-medium">
                         {strategy.candidate_selection_mode}
                       </span>
                     </div>
@@ -163,7 +163,7 @@ export default function Dashboard() {
 
                   {/* Actions */}
                   <div className="border-t border-slate-900/60 pt-3 flex justify-between items-center mt-3">
-                    <span className="text-[10px] text-slate-500 flex items-center gap-1 font-medium">
+                    <span className="text-[10px] text-slate-400 flex items-center gap-1 font-medium">
                       <Clock size={10} />
                       {new Date(strategy.updated_at).toLocaleDateString()}
                     </span>
@@ -180,7 +180,7 @@ export default function Dashboard() {
             })}
           </div>
         )}
-      </main>
+      </div>
     </div>
   );
 }

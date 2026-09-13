@@ -73,7 +73,7 @@ function BuilderContent() {
           >
             <ArrowLeft size={16} />
           </Link>
-          <span className="text-xs text-slate-500 font-medium">Dashboard / Strategy Builder Workspace</span>
+          <span className="text-xs text-slate-400 font-medium">Dashboard / Strategy Builder Workspace</span>
         </div>
         <div className="flex items-center gap-3 text-xs font-semibold">
           <Link href="/indicator-lab" className="text-slate-400 hover:text-white transition">

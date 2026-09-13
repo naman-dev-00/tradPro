@@ -24,7 +24,7 @@ export function AuthHeaderBadge() {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 text-xs text-slate-500 animate-pulse">
+      <div className="flex items-center gap-2 text-xs text-slate-400 animate-pulse" aria-label="Loading user state">
         <div className="h-6 w-16 bg-slate-800 rounded"></div>
       </div>
     );
@@ -35,9 +35,10 @@ export function AuthHeaderBadge() {
     return (
       <a
         href={`/login${returnParam}`}
-        className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 transition"
+        aria-label="Sign in to your account"
+        className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 focus:outline-none focus:ring-2 focus:ring-emerald-400 transition"
       >
-        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
         </svg>
         Sign In
@@ -52,11 +53,13 @@ export function AuthHeaderBadge() {
   }[user.role] || "bg-slate-700 text-slate-300 border-slate-600";
 
   return (
-    <div className="flex items-center gap-3 bg-slate-900/80 border border-slate-800 px-2.5 py-1 rounded-lg">
-      <div className="flex items-center gap-1.5">
-        <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
-        <span className="text-xs font-medium text-slate-200">{user.username}</span>
-        <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border font-semibold ${roleStyles}`}>
+    <div className="flex items-center gap-2 sm:gap-3 bg-slate-900/80 border border-slate-800 px-2 sm:px-2.5 py-1 rounded-lg shrink-0" aria-label="User profile and session badge">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" aria-hidden="true"></div>
+        <span className="text-xs font-medium text-slate-200 truncate max-w-[70px] xs:max-w-[100px] sm:max-w-none" title={user.username}>
+          {user.username}
+        </span>
+        <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border font-semibold shrink-0 ${roleStyles}`}>
           {user.role}
         </span>
       </div>
@@ -65,7 +68,8 @@ export function AuthHeaderBadge() {
         onClick={handleLogout}
         disabled={loggingOut}
         title="Sign Out"
-        className="text-xs text-slate-400 hover:text-rose-400 transition font-medium cursor-pointer"
+        aria-label="Sign out of your account"
+        className="text-xs text-slate-400 hover:text-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-400 rounded px-1 transition font-medium cursor-pointer shrink-0"
       >
         {loggingOut ? "..." : "Sign Out"}
       </button>

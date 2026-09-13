@@ -46,8 +46,10 @@ export function IndicatorSelector({
 
       {/* Select Indicator Dropdown */}
       <div>
-        <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">Select Indicator</label>
+        <label htmlFor="indicator-select" className="block text-[11px] font-semibold text-slate-400 mb-1.5">Select Indicator</label>
         <select
+          id="indicator-select"
+          aria-label="Select Indicator"
           value={selectedIndicatorName}
           onChange={(e) => onSelectIndicator(e.target.value)}
           disabled={loading}

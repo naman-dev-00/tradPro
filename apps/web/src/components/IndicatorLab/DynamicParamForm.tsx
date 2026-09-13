@@ -45,10 +45,12 @@ export function DynamicParamForm({
           return (
             <div key={key}>
               <div className="flex justify-between items-center text-[11px] mb-1">
-                <label className="font-semibold text-slate-300 capitalize">{key.replace("_", " ")}</label>
-                <span className="text-[10px] text-slate-500 font-mono">Min: {meta.minimum ?? 1}</span>
+                <label htmlFor={`param-input-${key}`} className="font-semibold text-slate-300 capitalize">{key.replace("_", " ")}</label>
+                <span className="text-[10px] text-slate-400 font-mono">Min: {meta.minimum ?? 1}</span>
               </div>
               <input
+                id={`param-input-${key}`}
+                aria-label={key.replace("_", " ")}
                 type="number"
                 value={val}
                 min={meta.minimum ?? 1}

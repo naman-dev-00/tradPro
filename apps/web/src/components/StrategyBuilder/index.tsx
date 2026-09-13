@@ -296,16 +296,15 @@ export function StrategyBuilder({ initialStrategy, onSaveSuccess }: StrategyBuil
       {/* Workspace Area */}
       <div className="flex flex-1 min-h-0">
         {/* Left Toolbox */}
-        <div className="w-64 border-r border-slate-900 p-4 overflow-y-auto shrink-0 bg-slate-950/40">
+        <div tabIndex={0} aria-label="Strategy Builder Toolbox" className="w-64 border-r border-slate-900 p-4 overflow-y-auto shrink-0 bg-slate-950/40 focus:outline-none focus:ring-1 focus:ring-slate-800">
           <Sidebar />
         </div>
 
-        {/* Visual Graph Canvas */}
-        <div className="flex-1 relative bg-slate-950" ref={flowWrapper}>
+        {/* Center React Flow Canvas */}
+        <div className="flex-1 h-full bg-slate-950 relative">
           <ReactFlow
             nodes={nodes}
             edges={edges}
-            nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -315,7 +314,9 @@ export function StrategyBuilder({ initialStrategy, onSaveSuccess }: StrategyBuil
             onNodeClick={onNodeClick}
             onPaneClick={onPaneClick}
             onEdgeDoubleClick={onEdgeDoubleClick}
-            fitView
+            nodeTypes={nodeTypes}
+            defaultViewport={{ x: 50, y: 50, zoom: 0.85 }}
+            fitViewOptions={{ padding: 0.2 }}
           >
             <Background color="#1e293b" gap={20} />
             <Controls className="bg-slate-900 border-slate-800 text-slate-100 [&>button]:border-slate-800 [&>button]:bg-slate-900 [&>button]:text-slate-100 hover:[&>button]:bg-slate-800" />
@@ -323,7 +324,7 @@ export function StrategyBuilder({ initialStrategy, onSaveSuccess }: StrategyBuil
         </div>
 
         {/* Right Properties Panel */}
-        <div className="w-80 border-l border-slate-900 p-4 overflow-y-auto shrink-0 bg-slate-950/40">
+        <div tabIndex={0} aria-label="Properties Panel" className="w-80 border-l border-slate-900 p-4 overflow-y-auto shrink-0 bg-slate-950/40 focus:outline-none focus:ring-1 focus:ring-slate-800">
           <PropertiesPanel selectedNode={selectedNode} onUpdate={onNodeUpdate} />
         </div>
       </div>

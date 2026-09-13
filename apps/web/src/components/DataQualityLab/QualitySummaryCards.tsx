@@ -65,7 +65,7 @@ export function QualitySummaryCards({ report }: QualitySummaryCardsProps) {
             <div className="text-[11px] text-slate-400">{statusConfig.subtitle}</div>
           </div>
         </div>
-        <div className="text-[10px] font-mono text-slate-500 pt-2 border-t border-slate-800/60">
+        <div className="text-[10px] font-mono text-slate-400 pt-2 border-t border-slate-800/60">
           Rules Version: {report.audit_rules_version}
         </div>
       </div>
@@ -82,10 +82,10 @@ export function QualitySummaryCards({ report }: QualitySummaryCardsProps) {
         </div>
         <div className="flex items-center justify-between text-[11px] font-mono pt-2 border-t border-slate-800/60">
           <span className="text-emerald-400">{summary.completed_rows} completed</span>
-          <span className={summary.incomplete_rows > 0 ? "text-amber-400" : "text-slate-500"}>
+          <span className={summary.incomplete_rows > 0 ? "text-amber-400" : "text-slate-400"}>
             {summary.incomplete_rows} incomplete
           </span>
-          <span className={summary.malformed_rows > 0 ? "text-rose-400" : "text-slate-500"}>
+          <span className={summary.malformed_rows > 0 ? "text-rose-400" : "text-slate-400"}>
             {summary.malformed_rows} malformed
           </span>
         </div>

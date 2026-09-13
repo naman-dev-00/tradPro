@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { User, getCurrentUser, loginUser as apiLoginUser, logoutUser as apiLogoutUser } from "@/lib/api";
 
 interface AuthContextType {
@@ -16,6 +17,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const pathname = usePathname();
+  const router = useRouter();
 
   const refreshUser = async () => {
     try {
@@ -31,6 +34,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refreshUser();
   }, []);
+
+  useEffect(() => {
+    if (!loading && !user && pathname) {
+      const protectedRoutes = [
+        "/builder",
+        "/indicator-lab",
+        "/rule-lab",
+        "/multi-series-lab",
+        "/historical-replay-lab",
+        "/inspection-history",
+        "/replay-comparison-lab",
+        "/data-quality-lab",
+      ];
+      const isProtected = protectedRoutes.some((r) => pathname === r || pathname.startsWith(`${r}/`));
+      if (isProtected) {
+        router.replace(`/login?returnUrl=${encodeURIComponent(pathname)}`);
+      }
+    }
+  }, [loading, user, pathname, router]);
 
   const login = async (usernameOrEmail: string, password: string): Promise<User> => {
     const loggedInUser = await apiLoginUser(usernameOrEmail, password);

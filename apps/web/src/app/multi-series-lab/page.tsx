@@ -9,8 +9,8 @@ export const metadata: Metadata = {
 
 export default function MultiSeriesLabPage() {
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
       <MultiSeriesLabWorkspace />
-    </main>
+    </div>
   );
 }

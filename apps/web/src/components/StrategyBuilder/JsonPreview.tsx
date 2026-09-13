@@ -26,7 +26,11 @@ export function JsonPreview({ strategyJson }: JsonPreviewProps) {
         </button>
       </div>
 
-      <pre className="flex-1 overflow-auto text-[11px] font-mono text-slate-300 bg-slate-900/60 p-3 rounded border border-slate-900 select-all leading-relaxed whitespace-pre max-h-[160px]">
+      <pre
+        tabIndex={0}
+        aria-label="Strategy JSON payload"
+        className="flex-1 overflow-auto text-[11px] font-mono text-slate-300 bg-slate-900/60 p-3 rounded border border-slate-900 select-all leading-relaxed whitespace-pre max-h-[160px] focus:outline-none focus:ring-1 focus:ring-slate-700"
+      >
         {jsonStr}
       </pre>
     </div>

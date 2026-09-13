@@ -48,3 +48,10 @@ Thumbs.db
 .claude/
 apps/web/AGENTS.md
 apps/web/CLAUDE.md
+
+# Playwright & E2E Test Artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+e2e_manifest.json

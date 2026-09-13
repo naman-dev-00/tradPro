@@ -41,8 +41,10 @@ export function DatasetSelector({
 
       {/* Selector Dropdown */}
       <div>
-        <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">Select Dataset Fixture</label>
+        <label htmlFor="dataset-fixture-select" className="block text-[11px] font-semibold text-slate-400 mb-1.5">Select Dataset Fixture</label>
         <select
+          id="dataset-fixture-select"
+          aria-label="Select Dataset Fixture"
           value={selectedDatasetId}
           onChange={(e) => onSelectDataset(e.target.value)}
           disabled={loading}
@@ -86,7 +88,7 @@ export function DatasetSelector({
             <div className="bg-slate-900/50 border border-slate-900 rounded p-2">
               <span className="text-[10px] text-slate-400 block">Excluded</span>
               <span className={`text-xs font-mono font-bold ${
-                datasetDetail.excluded_incomplete_candles > 0 ? "text-amber-400" : "text-slate-500"
+                datasetDetail.excluded_incomplete_candles > 0 ? "text-amber-400" : "text-slate-400"
               }`}>
                 {datasetDetail.excluded_incomplete_candles}
               </span>

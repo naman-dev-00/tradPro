@@ -59,7 +59,7 @@ export function Sidebar() {
       </div>
 
       <div className="border-t border-slate-900 pt-3">
-        <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+        <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
           <HelpCircle size={12} />
           <span>Double-click an edge to delete it.</span>
         </div>
