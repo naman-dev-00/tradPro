@@ -328,6 +328,7 @@ def list_outbox_entries(
             next_attempt_at=e.next_attempt_at,
             last_error_code=e.last_error_code,
             last_error_message=e.last_error_message,
+            transmission_started_at=e.transmission_started_at,
             created_at=e.created_at,
             updated_at=e.updated_at,
         )

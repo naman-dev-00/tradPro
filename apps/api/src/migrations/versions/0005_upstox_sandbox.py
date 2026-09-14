@@ -111,6 +111,7 @@ def upgrade() -> None:
         sa.Column("next_attempt_at", UTCDateTime(), nullable=False),
         sa.Column("last_error_code", sa.String(100), nullable=True),
         sa.Column("last_error_message", sa.String(500), nullable=True),
+        sa.Column("transmission_started_at", UTCDateTime(), nullable=True),
         sa.Column("created_at", UTCDateTime(), nullable=False),
         sa.Column("updated_at", UTCDateTime(), nullable=False),
         sa.CheckConstraint("action_type IN ('PLACE', 'CANCEL')", name="ck_submission_outbox_action_type"),

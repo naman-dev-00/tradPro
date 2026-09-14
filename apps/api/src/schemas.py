@@ -464,6 +464,7 @@ class SubmissionOutboxResponse(BaseModel):
     next_attempt_at: datetime.datetime
     last_error_code: Optional[str] = None
     last_error_message: Optional[str] = None
+    transmission_started_at: Optional[datetime.datetime] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

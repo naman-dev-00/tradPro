@@ -184,7 +184,6 @@ export interface IndicatorResultOutput {
   timestamp: string;
   indicator: string;
   value: number | Record<string, number | null> | null;
-  raw_value?: any;
   available: boolean;
   warmup_remaining: number;
 }

@@ -563,6 +563,7 @@ class SubmissionOutbox(Base):
     next_attempt_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
     last_error_code = Column(String(100), nullable=True)
     last_error_message = Column(String(500), nullable=True)
+    transmission_started_at = Column(UTCDateTime, nullable=True)
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
 

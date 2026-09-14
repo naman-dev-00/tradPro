@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.database import SessionLocal
 from src.models import (
@@ -17,6 +18,7 @@ from src.models import (
     OrderEvent,
     PaperAccount,
     ProviderConnection,
+    ReconciliationRecord,
     SubmissionOutbox,
     WorkerHeartbeat,
 )
@@ -38,6 +40,18 @@ from src.services.sandbox_gate_service import SandboxGateService
 
 logger = logging.getLogger("tradepro.outbox_worker")
 
+# Bounded SQLite lock retry constants
+SQLITE_LOCK_MAX_RETRIES = 5
+SQLITE_LOCK_BACKOFF_MS = [50, 100, 200, 400, 800]
+
+
+def _is_sqlite_locked_error(exc: Exception) -> bool:
+    """Return True only for transient SQLite busy/locked OperationalError."""
+    if not isinstance(exc, OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
 
 class SandboxOutboxWorker:
     """
@@ -46,10 +60,13 @@ class SandboxOutboxWorker:
     - Bounded batch processing
     - Priority for CANCEL over PLACE
     - Database leasing and expired lease recovery
+    - Durable pre-transmission marker (transmission_started_at)
+    - Fail-closed expired-lease recovery
     - Double network-gate checking before transmission
     - Persistent WorkerHeartbeat tracking
     - Graceful shutdown
     - Conservative 429 and ambiguity handling
+    - Bounded SQLite lock retry for reconciliation persistence
     """
 
     def __init__(
@@ -152,7 +169,7 @@ class SandboxOutboxWorker:
 
     def process_batch(self, db: Session) -> int:
         now = self.clock()
-        # 1. Recover expired leases
+        # 1. Recover expired leases (fail-closed based on transmission_started_at)
         self.recover_expired_leases(db, now)
 
         # 2. Claim pending records: Priority for CANCEL over PLACE
@@ -167,16 +184,90 @@ class SandboxOutboxWorker:
         return len(claimed)
 
     def recover_expired_leases(self, db: Session, now: datetime.datetime) -> None:
+        """
+        Fail-closed expired-lease recovery.
+
+        If transmission_started_at is NULL: the external call never began.
+          -> Safe to requeue (RETRY_SCHEDULED).
+        If transmission_started_at is NOT NULL: the external call may have occurred.
+          -> NEVER retransmit. Transition to RECONCILIATION_REQUIRED.
+          -> Create exactly one OPEN reconciliation record.
+          -> Zero adapter/network calls.
+        """
         expired = db.query(SubmissionOutbox).filter(
             SubmissionOutbox.status == "CLAIMED",
             SubmissionOutbox.claim_lease_until < now,
         ).all()
         for rec in expired:
-            rec.status = "RETRY_SCHEDULED"
-            rec.claimed_by = None
-            rec.claim_lease_until = None
-            rec.last_error_code = "LEASE_EXPIRED"
-            rec.last_error_message = "Worker lease expired; returned to queue."
+            if rec.transmission_started_at is None:
+                # Safe: external call definitely did not begin
+                rec.status = "RETRY_SCHEDULED"
+                rec.claimed_by = None
+                rec.claim_lease_until = None
+                rec.last_error_code = "LEASE_EXPIRED"
+                rec.last_error_message = "Worker lease expired before transmission; returned to queue."
+            else:
+                # UNSAFE: external call may have occurred. Fail closed.
+                logger.warning(
+                    "Expired lease for outbox %s with transmission_started_at=%s. "
+                    "Failing closed to RECONCILIATION_REQUIRED.",
+                    rec.id, rec.transmission_started_at,
+                )
+                order = db.query(Order).filter(
+                    Order.id == rec.order_id,
+                    Order.owner_id == rec.owner_id,
+                ).first()
+
+                if order:
+                    curr_status = OrderStatus(order.status)
+                    if curr_status != OrderStatus.RECONCILIATION_REQUIRED:
+                        try:
+                            validate_order_transition(
+                                curr_status, OrderStatus.RECONCILIATION_REQUIRED,
+                                actor="UPSTOX_WORKER", reason_code="LEASE_EXPIRED_AFTER_TRANSMISSION",
+                            )
+                            order.status = OrderStatus.RECONCILIATION_REQUIRED.value
+                            seq = db.query(func.coalesce(func.max(OrderEvent.sequence_number), 0)).filter(
+                                OrderEvent.order_id == order.id
+                            ).scalar() + 1
+                            db.add(OrderEvent(
+                                order_id=order.id,
+                                sequence_number=seq,
+                                previous_status=curr_status.value,
+                                new_status=OrderStatus.RECONCILIATION_REQUIRED.value,
+                                actor="UPSTOX_WORKER",
+                                reason_code="LEASE_EXPIRED_AFTER_TRANSMISSION",
+                                metadata_json={
+                                    "error_message": "Lease expired after transmission may have begun",
+                                    "transmission_started_at": rec.transmission_started_at.isoformat(),
+                                },
+                            ))
+                        except Exception as ex:
+                            logger.warning(
+                                "Could not transition order %s during lease recovery: %s",
+                                rec.order_id, str(ex),
+                            )
+
+                rec.status = "RECONCILIATION_REQUIRED"
+                rec.claimed_by = None
+                rec.claim_lease_until = None
+                rec.last_error_code = "LEASE_EXPIRED_AFTER_TRANSMISSION"
+                rec.last_error_message = "Lease expired after transmission may have begun; requires manual reconciliation."
+
+                # Create exactly one OPEN reconciliation record (idempotent)
+                try:
+                    with db.begin_nested():
+                        recon = ReconciliationRecord(
+                            owner_id=rec.owner_id,
+                            order_id=rec.order_id,
+                            outbox_id=rec.id,
+                            status="OPEN",
+                        )
+                        db.add(recon)
+                        db.flush()
+                except IntegrityError:
+                    # Already exists — reload it
+                    pass
 
     def claim_records(self, db: Session, now: datetime.datetime) -> List[SubmissionOutbox]:
         lease_until = now + datetime.timedelta(seconds=self.lease_duration_seconds)
@@ -206,6 +297,28 @@ class SandboxOutboxWorker:
 
         db.flush()
         return claimed
+
+    def _commit_transmission_marker(self, db: Session, outbox: SubmissionOutbox, now: datetime.datetime) -> bool:
+        """
+        Persist the durable pre-transmission marker and commit.
+        Returns True if the marker was successfully committed.
+        Returns False if commit fails (caller must NOT proceed to external call).
+        """
+        outbox.transmission_started_at = now
+        try:
+            db.flush()
+            db.commit()
+            return True
+        except Exception as exc:
+            logger.error(
+                "Failed to commit transmission marker for outbox %s: %s",
+                outbox.id, str(exc),
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return False
 
     def process_record(self, db: Session, outbox: SubmissionOutbox, now: datetime.datetime) -> None:
         order = db.query(Order).filter(
@@ -278,8 +391,31 @@ class SandboxOutboxWorker:
             outbox.last_error_message = "; ".join(gate_reasons)
             return
 
+        # --- TRANSACTION BOUNDARY: Commit the durable pre-transmission marker ---
+        # This is a separate committed transaction BEFORE any external call.
+        # If this commit fails, we do NOT contact the broker.
+        if not self._commit_transmission_marker(db, outbox, now):
+            # Marker commit failed — do NOT proceed to external call.
+            # The outbox still has status=CLAIMED with no marker.
+            # On lease expiry, recover_expired_leases will safely requeue it.
+            logger.error("Aborting transmission for outbox %s: marker commit failed.", outbox.id)
+            return
+
+        # Re-query order since we committed (session state may be stale)
+        order = db.query(Order).filter(
+            Order.id == outbox.order_id,
+            Order.owner_id == outbox.owner_id,
+        ).first()
+        outbox = db.query(SubmissionOutbox).filter(
+            SubmissionOutbox.id == outbox.id,
+        ).first()
+
+        if not order or not outbox:
+            return
+
         token = os.environ.get("UPSTOX_SANDBOX_ACCESS_TOKEN", "")
 
+        # --- EXTERNAL CALL: No DB write transaction held during HTTP request ---
         if outbox.action_type == "PLACE":
             self._handle_place_action(db, outbox, order, token, now)
         elif outbox.action_type == "CANCEL":
@@ -471,6 +607,62 @@ class SandboxOutboxWorker:
         error_code: str,
         error_message: str,
     ) -> None:
+        """
+        Transition outbox + order to RECONCILIATION_REQUIRED with bounded SQLite lock retry.
+        On retry exhaustion, fail loudly but preserve the transmission_started_at marker
+        so lease recovery will eventually force reconciliation.
+        """
+        last_exc = None
+        for attempt in range(SQLITE_LOCK_MAX_RETRIES):
+            try:
+                self._do_reconciliation_transition(db, outbox, order, error_code, error_message)
+                return  # Success
+            except OperationalError as oe:
+                if not _is_sqlite_locked_error(oe):
+                    raise  # Not a transient lock error — propagate immediately
+                last_exc = oe
+                logger.warning(
+                    "SQLite lock contention on reconciliation transition for outbox %s (attempt %d/%d): %s",
+                    outbox.id, attempt + 1, SQLITE_LOCK_MAX_RETRIES, str(oe),
+                )
+                # Roll back the failed transaction
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                # Backoff without holding a DB transaction open
+                backoff_ms = SQLITE_LOCK_BACKOFF_MS[min(attempt, len(SQLITE_LOCK_BACKOFF_MS) - 1)]
+                time.sleep(backoff_ms / 1000.0)
+                # Re-query on fresh transaction state
+                try:
+                    order = db.query(Order).filter(Order.id == order.id).first()
+                    outbox = db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox.id).first()
+                    if not order or not outbox:
+                        raise RuntimeError(f"Lost outbox/order records during retry for outbox {outbox.id if outbox else 'unknown'}")
+                except Exception:
+                    raise
+
+        # Retry exhaustion: fail loudly, preserve marker
+        logger.error(
+            "CRITICAL: SQLite lock retry exhausted for outbox %s after %d attempts. "
+            "transmission_started_at marker remains at %s. "
+            "Lease recovery will force reconciliation on next cycle.",
+            outbox.id if outbox else "unknown",
+            SQLITE_LOCK_MAX_RETRIES,
+            outbox.transmission_started_at if outbox else "unknown",
+        )
+        if last_exc:
+            raise last_exc
+
+    def _do_reconciliation_transition(
+        self,
+        db: Session,
+        outbox: SubmissionOutbox,
+        order: Order,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        """Inner reconciliation transition logic (may raise OperationalError on SQLite lock)."""
         curr_status = OrderStatus(order.status)
         if curr_status != OrderStatus.RECONCILIATION_REQUIRED:
             try:
@@ -488,6 +680,8 @@ class SandboxOutboxWorker:
                         metadata_json={"error_message": error_message[:500]},
                     ))
                     db.flush()
+            except OperationalError:
+                raise  # Let caller handle SQLite lock retry
             except Exception as ex:
                 logger.warning("Could not transition order %s to RECONCILIATION_REQUIRED (concurrent race): %s", order.id, str(ex))
                 db.refresh(order)
@@ -502,8 +696,6 @@ class SandboxOutboxWorker:
         # Concurrency-safe creation of exactly one OPEN reconciliation record:
         # Nested transaction/savepoint catches only the expected (owner_id, outbox_id) unique race,
         # preserves the outer order/outbox updates, reloads the winning OPEN record, and re-raises unrelated errors.
-        from sqlalchemy.exc import IntegrityError
-        from src.models import ReconciliationRecord
         try:
             with db.begin_nested():
                 rec = ReconciliationRecord(
