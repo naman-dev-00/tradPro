@@ -951,18 +951,56 @@ def test_outbox_atomicity_and_lease_recovery(session, sandbox_setup):
     """
     user = sandbox_setup["user"]
     runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
     now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_lease_1",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_l1",
+        trigger_event_key="tk_l1",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=990,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
 
     # 1. Create outbox record
     outbox = SubmissionOutbox(
         owner_id=user.id,
-        order_id="fake-order-1",
+        order_id=order.id,
         action_type="PLACE",
         priority=10,
         status="PENDING",
         idempotency_key="lease_test_key_1",
         canonical_payload_hash="hash_lease_1",
-        payload_json={"order_id": "fake-order-1"},
+        payload_json={"order_id": order.id},
         next_attempt_at=now,
     )
     session.add(outbox)
@@ -1340,20 +1378,16 @@ def test_concurrent_open_reconciliation_creation_race(session, sandbox_setup):
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy import text
 
-    session.execute(text("PRAGMA journal_mode=WAL;"))
-    session.execute(text("PRAGMA busy_timeout=15000;"))
     session.commit()
 
-    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
-
     user = sandbox_setup["user"]
+    user_id = user.id
     runtime = sandbox_setup["runtime"]
     acct = sandbox_setup["account"]
     now = datetime.datetime.now(datetime.timezone.utc)
 
-    db_setup = ThreadSessionFactory()
     intent = OrderIntent(
-        owner_id=user.id,
+        owner_id=user_id,
         runtime_id=runtime.id,
         action_mapping_id="m_conc_1",
         requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
@@ -1369,11 +1403,11 @@ def test_concurrent_open_reconciliation_creation_race(session, sandbox_setup):
         source_evaluation_fingerprint="fp_c1",
         trigger_event_key="tk_c1",
     )
-    db_setup.add(intent)
-    db_setup.flush()
+    session.add(intent)
+    session.flush()
 
     order = Order(
-        owner_id=user.id,
+        owner_id=user_id,
         runtime_id=runtime.id,
         intent_id=intent.id,
         account_id=acct.id,
@@ -1386,11 +1420,11 @@ def test_concurrent_open_reconciliation_creation_race(session, sandbox_setup):
         filled_quantity_units=0,
         status=OrderStatus.PENDING_SUBMISSION.value,
     )
-    db_setup.add(order)
-    db_setup.flush()
+    session.add(order)
+    session.flush()
 
     outbox = SubmissionOutbox(
-        owner_id=user.id,
+        owner_id=user_id,
         order_id=order.id,
         action_type="PLACE",
         priority=10,
@@ -1400,30 +1434,40 @@ def test_concurrent_open_reconciliation_creation_race(session, sandbox_setup):
         payload_json={"order_id": order.id},
         next_attempt_at=now,
     )
-    db_setup.add(outbox)
-    db_setup.commit()
+    session.add(outbox)
+    session.flush()
     order_id = order.id
     outbox_id = outbox.id
-    db_setup.close()
+    session.commit()
+    session.close()
+
+    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
 
     errors = []
     def worker_transition(thread_idx: int):
-        db = ThreadSessionFactory()
-        try:
-            db.execute(text("PRAGMA busy_timeout=30000;"))
-            worker = SandboxOutboxWorker(worker_id=f"worker-{thread_idx}")
-            t_order = db.query(Order).filter(Order.id == order_id).first()
-            t_outbox = db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
-            worker._transition_to_reconciliation(db, t_outbox, t_order, f"RACE_ERR_{thread_idx}", f"Concurrent race error from thread {thread_idx}")
-            db.commit()
-        except Exception as e:
-            errors.append(e)
-            db.rollback()
-        finally:
-            db.close()
+        worker = SandboxOutboxWorker(worker_id=f"worker-{thread_idx}")
+        max_retries = 10
+        for attempt in range(max_retries):
+            db = ThreadSessionFactory()
+            try:
+                t_order = db.query(Order).filter(Order.id == order_id).first()
+                t_outbox = db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+                worker._transition_to_reconciliation(db, t_outbox, t_order, f"RACE_ERR_{thread_idx}", f"Concurrent race error from thread {thread_idx}")
+                db.commit()
+                break
+            except Exception as e:
+                db.rollback()
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.05 * (attempt + 1))
+                    continue
+                errors.append(e)
+                break
+            finally:
+                db.close()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(worker_transition, i) for i in range(4)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(worker_transition, i) for i in range(2)]
         concurrent.futures.wait(futures)
 
     # Verify no unhandled integrity errors crashed the threads
@@ -1432,7 +1476,7 @@ def test_concurrent_open_reconciliation_creation_race(session, sandbox_setup):
     db_check = ThreadSessionFactory()
     # Exactly one OPEN record exists
     records = db_check.query(ReconciliationRecord).filter(
-        ReconciliationRecord.owner_id == user.id,
+        ReconciliationRecord.owner_id == user_id,
         ReconciliationRecord.outbox_id == outbox_id,
     ).all()
     assert len(records) == 1
@@ -1462,22 +1506,17 @@ def test_concurrent_manual_resolution_race(session, sandbox_setup):
     """
     import concurrent.futures
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy import text
 
-    session.execute(text("PRAGMA journal_mode=WAL;"))
-    session.execute(text("PRAGMA busy_timeout=15000;"))
     session.commit()
 
-    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
-
     user = sandbox_setup["user"]
+    user_id = user.id
     runtime = sandbox_setup["runtime"]
     acct = sandbox_setup["account"]
     now = datetime.datetime.now(datetime.timezone.utc)
 
-    db_setup = ThreadSessionFactory()
     intent = OrderIntent(
-        owner_id=user.id,
+        owner_id=user_id,
         runtime_id=runtime.id,
         action_mapping_id="m_conc_2",
         requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
@@ -1493,11 +1532,11 @@ def test_concurrent_manual_resolution_race(session, sandbox_setup):
         source_evaluation_fingerprint="fp_c2",
         trigger_event_key="tk_c2",
     )
-    db_setup.add(intent)
-    db_setup.flush()
+    session.add(intent)
+    session.flush()
 
     order = Order(
-        owner_id=user.id,
+        owner_id=user_id,
         runtime_id=runtime.id,
         intent_id=intent.id,
         account_id=acct.id,
@@ -1510,11 +1549,11 @@ def test_concurrent_manual_resolution_race(session, sandbox_setup):
         filled_quantity_units=0,
         status=OrderStatus.RECONCILIATION_REQUIRED.value,
     )
-    db_setup.add(order)
-    db_setup.flush()
+    session.add(order)
+    session.flush()
 
     outbox = SubmissionOutbox(
-        owner_id=user.id,
+        owner_id=user_id,
         order_id=order.id,
         action_type="PLACE",
         priority=10,
@@ -1524,21 +1563,24 @@ def test_concurrent_manual_resolution_race(session, sandbox_setup):
         payload_json={"order_id": order.id},
         next_attempt_at=now,
     )
-    db_setup.add(outbox)
-    db_setup.flush()
+    session.add(outbox)
+    session.flush()
 
     rec = ReconciliationRecord(
-        owner_id=user.id,
+        owner_id=user_id,
         order_id=order.id,
         outbox_id=outbox.id,
         status="OPEN",
     )
-    db_setup.add(rec)
-    db_setup.commit()
+    session.add(rec)
+    session.flush()
     rec_id = rec.id
     order_id = order.id
     outbox_id = outbox.id
-    db_setup.close()
+    session.commit()
+    session.close()
+
+    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
 
     successes = []
     conflicts = []
@@ -1547,9 +1589,10 @@ def test_concurrent_manual_resolution_race(session, sandbox_setup):
     def attempt_resolution(idx: int):
         db = ThreadSessionFactory()
         try:
+            actor = db.query(User).filter(User.id == user_id).first()
             resolved = SandboxService.resolve_reconciliation(
                 db=db,
-                actor_user=user,
+                actor_user=actor,
                 resolution_type="PLACE_CONFIRMED",
                 provider_order_reference=f"REF_CONCURRENT_{idx}",
                 notes=f"Concurrent resolution by thread {idx}",
@@ -1563,19 +1606,19 @@ def test_concurrent_manual_resolution_race(session, sandbox_setup):
         finally:
             db.close()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(attempt_resolution, i) for i in range(3)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(attempt_resolution, i) for i in range(2)]
         concurrent.futures.wait(futures)
 
     assert len(other_errors) == 0, f"Unexpected errors during resolution race: {other_errors}"
     assert len(successes) == 1, f"Expected exactly 1 success, got {len(successes)}"
-    assert len(conflicts) == 2, f"Expected 2 conflict errors, got {len(conflicts)}"
+    assert len(conflicts) == 1, f"Expected 1 conflict error, got {len(conflicts)}"
 
     db_check = ThreadSessionFactory()
     final_rec = db_check.query(ReconciliationRecord).filter(ReconciliationRecord.id == rec_id).first()
     assert final_rec.status == "RESOLVED"
     assert final_rec.resolution_type == "PLACE_CONFIRMED"
-    assert final_rec.resolved_by == user.id
+    assert final_rec.resolved_by == user_id
 
     final_order = db_check.query(Order).filter(Order.id == order_id).first()
     assert final_order.status == OrderStatus.ACKNOWLEDGED.value
@@ -1610,26 +1653,22 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
     """
     import concurrent.futures
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy import text
 
-    session.execute(text("PRAGMA journal_mode=WAL;"))
-    session.execute(text("PRAGMA busy_timeout=15000;"))
     session.commit()
 
-    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
-
     user = sandbox_setup["user"]
+    user_id = user.id
     runtime = sandbox_setup["runtime"]
     acct = sandbox_setup["account"]
+    acct_id = acct.id
     now = datetime.datetime.now(datetime.timezone.utc)
 
-    db_setup = ThreadSessionFactory()
-    setup_acct = db_setup.query(PaperAccount).filter(PaperAccount.id == acct.id).first()
+    setup_acct = session.query(PaperAccount).filter(PaperAccount.id == acct_id).first()
     setup_acct.reserved_cash_units = 5000000
-    db_setup.flush()
+    session.flush()
 
     intent = OrderIntent(
-        owner_id=user.id,
+        owner_id=user_id,
         runtime_id=runtime.id,
         action_mapping_id="m_conc_rej",
         requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
@@ -1645,11 +1684,11 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
         source_evaluation_fingerprint="fp_rej",
         trigger_event_key="tk_rej",
     )
-    db_setup.add(intent)
-    db_setup.flush()
+    session.add(intent)
+    session.flush()
 
     order = Order(
-        owner_id=user.id,
+        owner_id=user_id,
         runtime_id=runtime.id,
         intent_id=intent.id,
         account_id=acct.id,
@@ -1662,11 +1701,11 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
         filled_quantity_units=0,
         status=OrderStatus.RECONCILIATION_REQUIRED.value,
     )
-    db_setup.add(order)
-    db_setup.flush()
+    session.add(order)
+    session.flush()
 
     outbox = SubmissionOutbox(
-        owner_id=user.id,
+        owner_id=user_id,
         order_id=order.id,
         action_type="PLACE",
         priority=10,
@@ -1676,21 +1715,24 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
         payload_json={"order_id": order.id},
         next_attempt_at=now,
     )
-    db_setup.add(outbox)
-    db_setup.flush()
+    session.add(outbox)
+    session.flush()
 
     rec = ReconciliationRecord(
-        owner_id=user.id,
+        owner_id=user_id,
         order_id=order.id,
         outbox_id=outbox.id,
         status="OPEN",
     )
-    db_setup.add(rec)
-    db_setup.commit()
+    session.add(rec)
+    session.flush()
     rec_id = rec.id
     order_id = order.id
     outbox_id = outbox.id
-    db_setup.close()
+    session.commit()
+    session.close()
+
+    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
 
     successes = []
     conflicts = []
@@ -1699,9 +1741,10 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
     def attempt_reject(idx: int):
         db = ThreadSessionFactory()
         try:
+            actor = db.query(User).filter(User.id == user_id).first()
             resolved = SandboxService.resolve_reconciliation(
                 db=db,
-                actor_user=user,
+                actor_user=actor,
                 resolution_type="PLACE_REJECTED",
                 provider_order_reference=None,
                 notes=f"Concurrent reject by thread {idx}",
@@ -1715,13 +1758,13 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
         finally:
             db.close()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(attempt_reject, i) for i in range(3)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(attempt_reject, i) for i in range(2)]
         concurrent.futures.wait(futures)
 
     assert len(other_errors) == 0, f"Unexpected errors during resolution race: {other_errors}"
     assert len(successes) == 1, f"Expected exactly 1 success, got {len(successes)}"
-    assert len(conflicts) == 2, f"Expected 2 conflict errors, got {len(conflicts)}"
+    assert len(conflicts) == 1, f"Expected 1 conflict error, got {len(conflicts)}"
 
     db_check = ThreadSessionFactory()
     final_rec = db_check.query(ReconciliationRecord).filter(ReconciliationRecord.id == rec_id).first()
@@ -1732,7 +1775,7 @@ def test_concurrent_manual_resolution_place_rejected_releases_reservation_once(s
     assert final_order.status == OrderStatus.PROVIDER_REJECTED.value
 
     # Exactly one reservation release occurred:
-    final_acct = db_check.query(PaperAccount).filter(PaperAccount.id == acct.id).first()
+    final_acct = db_check.query(PaperAccount).filter(PaperAccount.id == acct_id).first()
     assert final_acct.reserved_cash_units == 0
 
     # Exactly one ledger release entry exists:

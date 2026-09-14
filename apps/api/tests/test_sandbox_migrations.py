@@ -331,6 +331,10 @@ def test_schema_reflection_no_token_fingerprint_and_priority_exists(migration_en
     assert "idempotency_key" in outbox_cols
     assert "canonical_payload_hash" in outbox_cols
 
+    outbox_uqs = inspector.get_unique_constraints("submission_outbox")
+    has_owner_id_uq = any(set(uq.get("column_names", [])) == {"owner_id", "id"} for uq in outbox_uqs)
+    assert has_owner_id_uq, f"Expected (owner_id, id) unique constraint on submission_outbox, got {outbox_uqs}"
+
     engine.dispose()
 
 

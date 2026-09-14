@@ -117,6 +117,7 @@ def upgrade() -> None:
         sa.CheckConstraint("(action_type = 'CANCEL' AND priority = 0) OR (action_type = 'PLACE' AND priority = 10)", name="ck_submission_outbox_priority_action"),
         sa.CheckConstraint("status IN ('PENDING', 'CLAIMED', 'DELIVERED', 'RETRY_SCHEDULED', 'RECONCILIATION_REQUIRED', 'DEAD_LETTER')", name="ck_submission_outbox_status"),
         sa.UniqueConstraint("owner_id", "idempotency_key", name="uq_submission_outbox_owner_idem"),
+        sa.UniqueConstraint("owner_id", "id", name="uq_submission_outbox_owner_resource"),
         sa.ForeignKeyConstraint(["owner_id", "order_id"], ["orders.owner_id", "orders.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_submission_outbox_order_owner"),
     )
     op.create_index("ix_submission_outbox_owner_id", "submission_outbox", ["owner_id"])

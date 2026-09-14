@@ -569,6 +569,7 @@ class SubmissionOutbox(Base):
     __table_args__ = (
         ForeignKeyConstraint(["owner_id", "order_id"], ["orders.owner_id", "orders.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_submission_outbox_order_owner"),
         UniqueConstraint("owner_id", "idempotency_key", name="uq_submission_outbox_owner_idem"),
+        UniqueConstraint("owner_id", "id", name="uq_submission_outbox_owner_resource"),
         CheckConstraint("action_type IN ('PLACE', 'CANCEL')", name="ck_submission_outbox_action_type"),
         CheckConstraint("(action_type = 'CANCEL' AND priority = 0) OR (action_type = 'PLACE' AND priority = 10)", name="ck_submission_outbox_priority_action"),
         CheckConstraint("status IN ('PENDING', 'CLAIMED', 'DELIVERED', 'RETRY_SCHEDULED', 'RECONCILIATION_REQUIRED', 'DEAD_LETTER')", name="ck_submission_outbox_status"),
