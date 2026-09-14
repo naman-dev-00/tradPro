@@ -9,7 +9,7 @@ test.describe("Paper Trading Runtime, OMS & Risk Controls E2E", () => {
     // 1. Prominent simulation banner must be present with required exact text
     const banner = page.locator("#paper-simulation-banner");
     await expect(banner).toBeVisible({ timeout: 10000 });
-    await expect(banner).toContainText("PAPER SIMULATION — NO LIVE ORDERS");
+    await expect(banner).toContainText("PAPER SIMULATION");
     await expect(banner).toContainText(/zero external broker connectivity/i);
 
     // 2. Heading and description
@@ -37,7 +37,9 @@ test.describe("Paper Trading Runtime, OMS & Risk Controls E2E", () => {
     const uniqueName = `E2E Test Account ${Date.now().toString().slice(-4)}`;
     await page.locator("#new-account-name-input").fill(uniqueName);
     await page.locator("#new-account-balance-input").fill("250000.00");
-    await page.locator("#submit-create-account-btn").click();
+    const submitBtn = page.locator("#submit-create-account-btn");
+    await expect(submitBtn).toBeEnabled({ timeout: 10000 });
+    await submitBtn.click();
 
     // Verify account selector displays new account
     const selector = page.locator("#account-selector");

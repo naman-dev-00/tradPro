@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import Base, engine, verify_database_connection
 from src.middleware.observability import ObservabilityMiddleware
-from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper
+from src.services.sandbox_gate_service import SandboxGateService
+from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper, sandbox
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -12,6 +13,8 @@ async def lifespan(app: FastAPI):
     settings.verify_security_settings()
     # Verify database connection safety on startup
     verify_database_connection()
+    # Enforce sandbox startup network environment guard
+    SandboxGateService.enforce_startup_environment_guard()
     # Automatically initialize tables in the active database
     Base.metadata.create_all(bind=engine)
     yield
@@ -46,6 +49,7 @@ app.include_router(multi_series.router)
 app.include_router(replays.router)
 app.include_router(data_quality.router)
 app.include_router(paper.router)
+app.include_router(sandbox.router)
 
 @app.get("/")
 def read_root():

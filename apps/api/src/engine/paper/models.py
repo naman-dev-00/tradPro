@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class TradingMode(str, Enum):
     PAPER = "PAPER"
+    BROKER_SANDBOX = "BROKER_SANDBOX"
+    BROKER_SANDBOX_RECORDED_FIXTURE = "BROKER_SANDBOX_RECORDED_FIXTURE"
     LIVE = "LIVE"
 
 class IntentType(str, Enum):
@@ -24,15 +26,20 @@ class OrderType(str, Enum):
 class TimeInForce(str, Enum):
     DAY = "DAY"
     GTC = "GTC"
+    IOC = "IOC"
 
 class OrderStatus(str, Enum):
     CREATED = "CREATED"
     ACCEPTED = "ACCEPTED"
+    PENDING_SUBMISSION = "PENDING_SUBMISSION"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCEL_PENDING = "CANCEL_PENDING"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
+    PROVIDER_REJECTED = "PROVIDER_REJECTED"
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
     EXPIRED = "EXPIRED"
     RISK_REJECTED = "RISK_REJECTED"
     ERROR = "ERROR"
@@ -88,6 +95,7 @@ class RiskReasonCode(str, Enum):
     RISK_KILL_SWITCH_ACTIVE = "RISK_KILL_SWITCH_ACTIVE"
     RISK_DUPLICATE_INTENT = "RISK_DUPLICATE_INTENT"
     RISK_INSUFFICIENT_AVAILABLE_CASH = "RISK_INSUFFICIENT_AVAILABLE_CASH"
+    RISK_UNSUPPORTED_SANDBOX_ORDER_TYPE = "RISK_UNSUPPORTED_SANDBOX_ORDER_TYPE"
 
 class ActionIgnoredReasonCode(str, Enum):
     ACTION_IGNORED_NO_POSITION_TO_REDUCE = "ACTION_IGNORED_NO_POSITION_TO_REDUCE"
@@ -119,6 +127,7 @@ class InstrumentSpec(BaseModel):
     session_open_time: str = "09:15:00"
     session_close_time: str = "15:30:00"
     spec_version: str = "1.0.0"
+    provider_mapping: Optional[Dict[str, Any]] = None
 
     def validate_order(
         self,

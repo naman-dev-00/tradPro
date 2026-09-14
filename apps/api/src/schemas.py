@@ -257,6 +257,8 @@ class StrategyRuntimeCreate(BaseModel):
     account_id: str
     dataset_id: str
     timeframe: str = "15m"
+    trading_mode: Optional[Literal["PAPER", "BROKER_SANDBOX", "BROKER_SANDBOX_RECORDED_FIXTURE"]] = "PAPER"
+    instrument_mapping_id: Optional[str] = None
 
 class StrategyRuntimeResponse(BaseModel):
     id: str
@@ -370,3 +372,119 @@ class KillSwitchResetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scope: Literal["GLOBAL", "USER"]
     reason: str = Field(..., min_length=3, max_length=500)
+
+
+# --- Upstox Sandbox Schemas ---
+
+class SandboxReadinessResponse(BaseModel):
+    runtime_id: str
+    environment_allowed: bool
+    network_enabled: bool
+    credential_present: bool
+    owner_matches: bool
+    provider_matches: bool
+    mapping_verified: bool
+    mapping_unexpired: bool
+    global_kill_switch_clear: bool
+    user_kill_switch_clear: bool
+    worker_available: bool
+    ready_for_submission: bool
+    cancel_available: bool
+    reasons: List[str] = []
+
+
+class ProviderConnectionUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credential_version: Optional[str] = Field("v1", max_length=32)
+
+
+class ProviderConnectionResponse(BaseModel):
+    provider: str
+    environment: str
+    credential_configured: bool
+    credential_version: str
+    readiness_status: str
+    last_successful_transmission_at: Optional[datetime.datetime] = None
+
+
+class ProviderInstrumentMappingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tradepro_instrument_id: str = Field(..., min_length=1, max_length=100)
+    provider_instrument_token: str = Field(..., min_length=1, max_length=100)
+    exchange: str = Field(..., min_length=1, max_length=20)
+    segment: str = Field(..., min_length=1, max_length=20)
+    symbol: str = Field(..., min_length=1, max_length=100)
+    expiry_date: Optional[datetime.datetime] = None
+    strike_price: Optional[Decimal] = None
+    option_type: Optional[Literal["CE", "PE"]] = None
+    lot_size: int = Field(1, gt=0)
+    tick_size: Decimal = Field(Decimal("0.05"), gt=0)
+    freeze_quantity: int = Field(1800, gt=0)
+
+
+class ProviderInstrumentMappingVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["VERIFIED", "REJECTED", "DISABLED"]
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class ProviderInstrumentMappingResponse(BaseModel):
+    id: str
+    owner_id: str
+    tradepro_instrument_id: str
+    provider_instrument_token: str
+    exchange: str
+    segment: str
+    symbol: str
+    expiry_date: Optional[datetime.datetime] = None
+    strike_price: Optional[Decimal] = None
+    option_type: Optional[str] = None
+    lot_size: int
+    tick_size: Decimal
+    freeze_quantity: int
+    verification_status: str
+    verified_by: Optional[str] = None
+    verified_at: Optional[datetime.datetime] = None
+    verification_audit_json: Optional[Dict[str, Any]] = None
+    mapping_version: int
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class SubmissionOutboxResponse(BaseModel):
+    id: str
+    owner_id: str
+    order_id: str
+    action_type: str
+    priority: int = 10
+    status: str
+    idempotency_key: str
+    attempts: int
+    max_attempts: int
+    next_attempt_at: datetime.datetime
+    last_error_code: Optional[str] = None
+    last_error_message: Optional[str] = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class ReconciliationResolutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outbox_id: Optional[str] = Field(None, max_length=36)
+    resolution_type: Literal["PLACE_CONFIRMED", "PLACE_REJECTED", "CANCEL_CONFIRMED", "CANCEL_NOT_CONFIRMED"]
+    provider_order_reference: Optional[str] = Field(None, max_length=100)
+    notes: str = Field(..., min_length=5, max_length=1000)
+
+
+class ReconciliationRecordResponse(BaseModel):
+    id: str
+    owner_id: str
+    order_id: str
+    outbox_id: str
+    status: str
+    resolution_type: Optional[Literal["PLACE_CONFIRMED", "PLACE_REJECTED", "CANCEL_CONFIRMED", "CANCEL_NOT_CONFIRMED"]] = None
+    resolved_by: Optional[str] = None
+    provider_order_reference: Optional[str] = None
+    notes: Optional[str] = None
+    resolved_at: Optional[datetime.datetime] = None
+    created_at: datetime.datetime

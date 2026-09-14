@@ -27,12 +27,23 @@ import {
   resetKillSwitch,
   getStrategies,
   getSyntheticDatasets,
+  SandboxReadinessResponse,
+  SubmissionOutboxResponse,
+  ReconciliationRecordResponse,
+  ProviderInstrumentMappingResponse,
+  fetchSandboxReadiness,
+  fetchSandboxOutbox,
+  fetchReconciliationRecords,
+  fetchSandboxMappings,
+  verifySandboxMapping,
+  resolveReconciliation,
 } from "../../lib/api";
 import { RuntimeControlHeader } from "./RuntimeControlHeader";
 import { ActivePositionsTable } from "./ActivePositionsTable";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { AuditTimelineModal } from "./AuditTimelineModal";
 import { KillSwitchModal } from "./KillSwitchModal";
+import { SandboxOutboxPanel } from "./SandboxOutboxPanel";
 import { useAuth } from "@/context/AuthContext";
 
 export const PaperTradingLab: React.FC = () => {
@@ -65,9 +76,19 @@ export const PaperTradingLab: React.FC = () => {
   const [newAccountBalance, setNewAccountBalance] = useState("100000.00");
   const [newRuntimeStrategyId, setNewRuntimeStrategyId] = useState("");
   const [newRuntimeDatasetId, setNewRuntimeDatasetId] = useState("");
+  const [newRuntimeTradingMode, setNewRuntimeTradingMode] = useState<string>("PAPER");
+
+  // Sandbox & Outbox state
+  const [activeTab, setActiveTab] = useState<"TRADING" | "SANDBOX">("TRADING");
+  const [sandboxReadiness, setSandboxReadiness] = useState<SandboxReadinessResponse | null>(null);
+  const [outboxItems, setOutboxItems] = useState<SubmissionOutboxResponse[]>([]);
+  const [reconciliations, setReconciliations] = useState<ReconciliationRecordResponse[]>([]);
+  const [mappings, setMappings] = useState<ProviderInstrumentMappingResponse[]>([]);
 
   // Loading & notification states
   const [loading, setLoading] = useState(false);
+  const [creatingAccount, setCreatingAccount] = useState(false);
+  const [creatingRuntime, setCreatingRuntime] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
 
   // Selected account & runtime objects
@@ -138,9 +159,72 @@ export const PaperTradingLab: React.FC = () => {
     }
   }, [selectedAccountId, selectedRuntimeId]);
 
+  // Refresh Sandbox-specific data (readiness, outbox, reconciliations, mappings)
+  const refreshSandboxData = useCallback(async () => {
+    try {
+      const [outbox, recs, maps] = await Promise.all([
+        fetchSandboxOutbox().catch(() => []),
+        fetchReconciliationRecords().catch(() => []),
+        fetchSandboxMappings().catch(() => []),
+      ]);
+      setOutboxItems(outbox);
+      setReconciliations(recs);
+      setMappings(maps);
+
+      if (selectedRuntimeId) {
+        try {
+          const r = await fetchSandboxReadiness(selectedRuntimeId);
+          setSandboxReadiness(r);
+        } catch {
+          setSandboxReadiness(null);
+        }
+      } else {
+        setSandboxReadiness(null);
+      }
+    } catch (err) {
+      console.error("Failed to refresh sandbox data:", err);
+    }
+  }, [selectedRuntimeId]);
+
   useEffect(() => {
     refreshAccountData();
-  }, [refreshAccountData]);
+    refreshSandboxData();
+  }, [refreshAccountData, refreshSandboxData]);
+
+  const handleResolveReconciliation = async (
+    orderId: string,
+    type: "PLACE_CONFIRMED" | "PLACE_REJECTED" | "CANCEL_CONFIRMED" | "CANCEL_NOT_CONFIRMED",
+    notes: string,
+    ref?: string
+  ) => {
+    try {
+      setLoading(true);
+      await resolveReconciliation(orderId, type, notes, ref);
+      showFeedback(`Successfully recorded ${type} resolution.`, "success");
+      await Promise.all([refreshAccountData(), refreshSandboxData()]);
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to resolve reconciliation", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyMapping = async (
+    mappingId: string,
+    status: "VERIFIED" | "REJECTED",
+    reason: string
+  ) => {
+    try {
+      setLoading(true);
+      await verifySandboxMapping(mappingId, status, reason);
+      showFeedback(`Mapping updated to ${status}.`, "success");
+      await refreshSandboxData();
+    } catch (err: any) {
+      showFeedback(err.message || "Failed to verify mapping", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Runtime Controls
   const handleStartRuntime = async () => {
@@ -269,9 +353,9 @@ export const PaperTradingLab: React.FC = () => {
   };
 
   const handleCreateAccount = async () => {
-    if (!newAccountName) return;
+    if (!newAccountName || creatingAccount) return;
     try {
-      setLoading(true);
+      setCreatingAccount(true);
       const acct = await createPaperAccount(newAccountName, newAccountBalance);
       setAccounts((prev) => [...prev, acct]);
       setSelectedAccountId(acct.id);
@@ -281,18 +365,19 @@ export const PaperTradingLab: React.FC = () => {
     } catch (err: any) {
       showFeedback(err.message || "Failed to create paper account", "error");
     } finally {
-      setLoading(false);
+      setCreatingAccount(false);
     }
   };
 
   const handleCreateRuntime = async () => {
-    if (!newRuntimeStrategyId || !selectedAccountId || !newRuntimeDatasetId) return;
+    if (!newRuntimeStrategyId || !selectedAccountId || !newRuntimeDatasetId || creatingRuntime) return;
     try {
-      setLoading(true);
+      setCreatingRuntime(true);
       const rt = await createPaperRuntime({
         strategy_id: newRuntimeStrategyId,
         account_id: selectedAccountId,
         dataset_id: newRuntimeDatasetId,
+        trading_mode: newRuntimeTradingMode,
       });
       setRuntimes((prev) => [rt, ...prev]);
       setSelectedRuntimeId(rt.id);
@@ -301,7 +386,7 @@ export const PaperTradingLab: React.FC = () => {
     } catch (err: any) {
       showFeedback(err.message || "Failed to create runtime", "error");
     } finally {
-      setLoading(false);
+      setCreatingRuntime(false);
     }
   };
 
@@ -472,6 +557,7 @@ export const PaperTradingLab: React.FC = () => {
       <RuntimeControlHeader
         runtime={currentRuntime}
         killSwitch={killSwitch}
+        readiness={sandboxReadiness}
         onStart={handleStartRuntime}
         onPause={handlePauseRuntime}
         onResume={handleResumeRuntime}
@@ -481,16 +567,66 @@ export const PaperTradingLab: React.FC = () => {
         loading={loading}
       />
 
-      {/* Active Positions Table */}
-      <ActivePositionsTable positions={positions} />
+      {/* Navigation Tabs between Active Trading and Sandbox Outbox */}
+      <div className="flex border-b border-slate-800 gap-6 pt-2">
+        <button
+          id="tab-trading"
+          onClick={() => setActiveTab("TRADING")}
+          className={`pb-3 text-sm font-bold border-b-2 transition-colors ${
+            activeTab === "TRADING"
+              ? "border-indigo-500 text-white"
+              : "border-transparent text-slate-400 hover:text-slate-300"
+          }`}
+        >
+          Active Trading & Positions
+        </button>
+        <button
+          id="tab-sandbox"
+          onClick={() => setActiveTab("SANDBOX")}
+          className={`pb-3 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 ${
+            activeTab === "SANDBOX"
+              ? "border-amber-500 text-white"
+              : "border-transparent text-slate-400 hover:text-slate-300"
+          }`}
+        >
+          <span>Upstox Sandbox & Outbox</span>
+          {orders.filter((o) => o.status === "RECONCILIATION_REQUIRED").length > 0 && (
+            <span
+              id="reconciliation-badge"
+              className="px-1.5 py-0.5 text-[10px] bg-rose-600 text-white rounded-full font-bold animate-pulse"
+            >
+              {orders.filter((o) => o.status === "RECONCILIATION_REQUIRED").length}
+            </span>
+          )}
+        </button>
+      </div>
 
-      {/* Order Book & Fills Panel */}
-      <OrderBookPanel
-        orders={orders}
-        fills={fills}
-        onCancelOrder={handleCancelOrder}
-        onInspectOrder={(ord) => setInspectedOrder(ord)}
-      />
+      {activeTab === "TRADING" ? (
+        <>
+          {/* Active Positions Table */}
+          <ActivePositionsTable positions={positions} />
+
+          {/* Order Book & Fills Panel */}
+          <OrderBookPanel
+            orders={orders}
+            fills={fills}
+            onCancelOrder={handleCancelOrder}
+            onInspectOrder={(ord) => setInspectedOrder(ord)}
+          />
+        </>
+      ) : (
+        <SandboxOutboxPanel
+          readiness={sandboxReadiness}
+          outboxItems={outboxItems}
+          reconciliations={reconciliations}
+          mappings={mappings}
+          reconciliationOrders={orders.filter((o) => o.status === "RECONCILIATION_REQUIRED")}
+          isAdmin={isAdmin}
+          onRefresh={refreshSandboxData}
+          onResolveReconciliation={handleResolveReconciliation}
+          onVerifyMapping={handleVerifyMapping}
+        />
+      )}
 
       {/* Audit Timeline Modal */}
       {inspectedOrder && (
@@ -549,7 +685,7 @@ export const PaperTradingLab: React.FC = () => {
               <button
                 id="submit-create-account-btn"
                 onClick={handleCreateAccount}
-                disabled={!newAccountName || loading}
+                disabled={!newAccountName || creatingAccount}
                 className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold rounded shadow"
               >
                 Create Account
@@ -612,6 +748,20 @@ export const PaperTradingLab: React.FC = () => {
               />
             </div>
 
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Execution / Trading Mode</label>
+              <select
+                id="runtime-mode-select"
+                className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                value={newRuntimeTradingMode}
+                onChange={(e) => setNewRuntimeTradingMode(e.target.value)}
+              >
+                <option value="PAPER">PAPER (Deterministic In-Memory Simulation)</option>
+                <option value="BROKER_SANDBOX">BROKER_SANDBOX (Upstox Sandbox Transmission)</option>
+                <option value="BROKER_SANDBOX_RECORDED_FIXTURE">BROKER_SANDBOX_RECORDED_FIXTURE (Offline Fixture Replay)</option>
+              </select>
+            </div>
+
             <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => setIsNewRuntimeModalOpen(false)}
@@ -622,7 +772,7 @@ export const PaperTradingLab: React.FC = () => {
               <button
                 id="submit-create-runtime-btn"
                 onClick={handleCreateRuntime}
-                disabled={!newRuntimeStrategyId || !newRuntimeDatasetId || !selectedAccountId || loading}
+                disabled={!newRuntimeStrategyId || !newRuntimeDatasetId || !selectedAccountId || creatingRuntime}
                 className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold rounded shadow"
               >
                 Instantiate Runtime

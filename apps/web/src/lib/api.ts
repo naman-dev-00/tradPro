@@ -1050,6 +1050,7 @@ export async function createPaperRuntime(data: {
   account_id: string;
   dataset_id: string;
   timeframe?: string;
+  trading_mode?: string;
   action_policy_id?: string;
   risk_policy_id?: string;
 }): Promise<StrategyRuntime> {
@@ -1178,6 +1179,203 @@ export async function resetKillSwitch(scope: "GLOBAL" | "USER", reason: string):
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || "Failed to reset kill switch");
+  }
+  return res.json();
+}
+
+// --- Milestone 6B Part 1: Upstox Sandbox & Outbox API ---
+
+export interface SandboxReadinessResponse {
+  runtime_id: string;
+  environment_allowed: boolean;
+  network_enabled: boolean;
+  credential_present: boolean;
+  owner_matches: boolean;
+  provider_matches: boolean;
+  mapping_verified: boolean;
+  mapping_unexpired: boolean;
+  global_kill_switch_clear: boolean;
+  user_kill_switch_clear: boolean;
+  worker_available: boolean;
+  ready_for_submission: boolean;
+  cancel_available: boolean;
+  reasons: string[];
+}
+
+export interface ProviderConnectionResponse {
+  provider: string;
+  environment: string;
+  credential_configured: boolean;
+  credential_version: string;
+  readiness_status: string;
+  last_successful_transmission_at: string | null;
+}
+
+
+export interface ProviderInstrumentMappingResponse {
+  id: string;
+  owner_id: string;
+  tradepro_instrument_id: string;
+  provider_instrument_token: string;
+  exchange: string;
+  segment: string;
+  symbol: string;
+  expiry_date: string | null;
+  strike_price: string | null;
+  option_type: string | null;
+  lot_size: number;
+  tick_size: string;
+  freeze_quantity: number;
+  verification_status: string;
+  verified_by: string | null;
+  verified_at: string | null;
+  verification_audit_json: Record<string, any> | null;
+  mapping_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubmissionOutboxResponse {
+  id: string;
+  owner_id: string;
+  order_id: string;
+  action_type: string;
+  priority: number;
+  status: string;
+  idempotency_key: string;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReconciliationRecordResponse {
+  id: string;
+  owner_id: string;
+  order_id: string;
+  outbox_id: string;
+  resolution_type: "PLACE_CONFIRMED" | "PLACE_REJECTED" | "CANCEL_CONFIRMED" | "CANCEL_NOT_CONFIRMED";
+  resolved_by: string;
+  provider_order_reference: string | null;
+  notes: string;
+  resolved_at: string;
+  created_at: string;
+}
+
+export async function fetchSandboxReadiness(runtimeId: string): Promise<SandboxReadinessResponse> {
+  const res = await apiFetch(`/api/v1/sandbox/readiness?runtime_id=${runtimeId}`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch sandbox readiness");
+  }
+  return res.json();
+}
+
+export async function fetchSandboxConnection(): Promise<ProviderConnectionResponse | null> {
+  const res = await apiFetch("/api/v1/sandbox/connection");
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch provider connection");
+  }
+  return res.json();
+}
+
+export async function fetchSandboxMappings(): Promise<ProviderInstrumentMappingResponse[]> {
+  const res = await apiFetch("/api/v1/sandbox/instruments");
+  if (!res.ok) throw new Error("Failed to fetch instrument mappings");
+  return res.json();
+}
+
+export async function createSandboxMapping(payload: {
+  tradepro_instrument_id: string;
+  provider_instrument_token: string;
+  exchange: string;
+  segment: string;
+  symbol: string;
+  lot_size?: number;
+  tick_size?: number;
+  freeze_quantity?: number;
+}): Promise<ProviderInstrumentMappingResponse> {
+  const res = await apiFetch("/api/v1/sandbox/instruments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to create instrument mapping");
+  }
+  return res.json();
+}
+
+export async function verifySandboxMapping(
+  mappingId: string,
+  status: "VERIFIED" | "REJECTED" | "DISABLED",
+  reason: string
+): Promise<ProviderInstrumentMappingResponse> {
+  const res = await apiFetch(`/api/v1/sandbox/instruments/${mappingId}/verify`, {
+    method: "POST",
+    body: JSON.stringify({ status, reason }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to verify instrument mapping");
+  }
+  return res.json();
+}
+
+export async function disableSandboxMapping(mappingId: string): Promise<ProviderInstrumentMappingResponse> {
+  const res = await apiFetch(`/api/v1/sandbox/instruments/${mappingId}/disable`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to disable instrument mapping");
+  }
+  return res.json();
+}
+
+export async function fetchSandboxOutbox(
+  statusFilter?: string,
+  actionTypeFilter?: string
+): Promise<SubmissionOutboxResponse[]> {
+  const params = new URLSearchParams();
+  if (statusFilter) params.append("status", statusFilter);
+  if (actionTypeFilter) params.append("action_type", actionTypeFilter);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const res = await apiFetch(`/api/v1/sandbox/outbox${query}`);
+  if (!res.ok) throw new Error("Failed to fetch sandbox outbox");
+  return res.json();
+}
+
+export async function fetchReconciliationRecords(): Promise<ReconciliationRecordResponse[]> {
+  const res = await apiFetch("/api/v1/sandbox/reconciliations");
+  if (!res.ok) throw new Error("Failed to fetch reconciliation records");
+  return res.json();
+}
+
+export async function resolveReconciliation(
+  orderId: string,
+  resolutionType: "PLACE_CONFIRMED" | "PLACE_REJECTED" | "CANCEL_CONFIRMED" | "CANCEL_NOT_CONFIRMED",
+  notes: string,
+  providerOrderReference?: string,
+  outboxId?: string
+): Promise<ReconciliationRecordResponse> {
+  const res = await apiFetch(`/api/v1/sandbox/reconciliations/${orderId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({
+      resolution_type: resolutionType,
+      notes,
+      provider_order_reference: providerOrderReference,
+      outbox_id: outboxId,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to resolve reconciliation record");
   }
   return res.json();
 }

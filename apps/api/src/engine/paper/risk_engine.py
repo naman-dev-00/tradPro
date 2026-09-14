@@ -42,12 +42,21 @@ class PureRiskEngine:
         Fail-closed: Returns passed=False on any breach or exception.
         """
         # 1. Trading Mode check
-        if trading_mode != TradingMode.PAPER:
+        if trading_mode not in (TradingMode.PAPER, TradingMode.BROKER_SANDBOX, TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE):
             return RiskCheckResult(
                 passed=False,
                 reason_code=RiskReasonCode.RISK_MODE_LIVE_FORBIDDEN,
-                message="Live trading mode is prohibited in this milestone. Only PAPER mode is permitted.",
+                message="Live trading mode is prohibited in this milestone. Only PAPER and BROKER_SANDBOX modes are permitted.",
             )
+
+        # 1b. Sandbox Order Type check (Upstox Sandbox supports LIMIT only in Part 1)
+        if trading_mode in (TradingMode.BROKER_SANDBOX, TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE):
+            if order_type != OrderType.LIMIT:
+                return RiskCheckResult(
+                    passed=False,
+                    reason_code=RiskReasonCode.RISK_UNSUPPORTED_SANDBOX_ORDER_TYPE,
+                    message=f"External Upstox sandbox submission supports LIMIT only. Order type '{order_type.value}' is rejected.",
+                )
 
         # 2. Kill switch check
         if kill_switch_active:

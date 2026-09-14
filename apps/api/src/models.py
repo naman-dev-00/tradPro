@@ -229,7 +229,7 @@ class StrategyRuntime(Base):
     risk_policy_id = Column(String(36), nullable=False, index=True)
     account_id = Column(String(36), nullable=False, index=True)
     status = Column(String(20), nullable=False, default="DRAFT")
-    trading_mode = Column(String(10), nullable=False, default="PAPER")
+    trading_mode = Column(String(50), nullable=False, default="PAPER")
     dataset_id = Column(String(255), nullable=False)
     timeframe = Column(String(50), nullable=False)
     strategy_snapshot = Column(JSON, nullable=True)
@@ -250,7 +250,7 @@ class StrategyRuntime(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('DRAFT', 'READY', 'RUNNING', 'PAUSED', 'HALTED', 'STOPPED', 'COMPLETED', 'ERROR')", name="ck_strategy_runtimes_status"),
-        CheckConstraint("trading_mode = 'PAPER'", name="ck_strategy_runtimes_trading_mode"),
+        CheckConstraint("trading_mode IN ('PAPER', 'BROKER_SANDBOX', 'BROKER_SANDBOX_RECORDED_FIXTURE')", name="ck_strategy_runtimes_trading_mode"),
         CheckConstraint("version > 0", name="ck_strategy_runtimes_version_pos"),
         CheckConstraint("consecutive_errors >= 0", name="ck_strategy_runtimes_errors_nonneg"),
         UniqueConstraint("id", "owner_id", name="uq_strategy_runtimes_id_owner"),
@@ -287,7 +287,7 @@ class OrderIntent(Base):
         CheckConstraint("side IN ('BUY', 'SELL')", name="ck_order_intents_side"),
         CheckConstraint("quantity_units > 0", name="ck_order_intents_qty_pos"),
         CheckConstraint("order_type IN ('MARKET', 'LIMIT')", name="ck_order_intents_order_type"),
-        CheckConstraint("time_in_force IN ('DAY', 'GTC')", name="ck_order_intents_tif"),
+        CheckConstraint("time_in_force IN ('DAY', 'GTC', 'IOC')", name="ck_order_intents_tif"),
         CheckConstraint("order_type != 'LIMIT' OR (limit_price_units IS NOT NULL AND limit_price_units > 0)", name="ck_order_intents_limit_price_pos"),
         CheckConstraint("order_type != 'MARKET' OR limit_price_units IS NULL", name="ck_order_intents_market_no_price"),
         UniqueConstraint("runtime_id", "trigger_event_key", name="uq_order_intents_trigger_event"),
@@ -311,7 +311,7 @@ class Order(Base):
     quantity_units = Column(BigInteger, nullable=False)
     limit_price_units = Column(BigInteger, nullable=True)
     filled_quantity_units = Column(BigInteger, nullable=False, default=0)
-    status = Column(String(20), nullable=False, default="CREATED")
+    status = Column(String(30), nullable=False, default="CREATED")
     version = Column(Integer, nullable=False, default=1)
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
@@ -322,12 +322,13 @@ class Order(Base):
         CheckConstraint("quantity_units > 0", name="ck_orders_qty_pos"),
         CheckConstraint("order_sequence_number > 0", name="ck_orders_seq_pos"),
         CheckConstraint("filled_quantity_units >= 0 AND filled_quantity_units <= quantity_units", name="ck_orders_filled_bounds"),
-        CheckConstraint("status IN ('CREATED', 'ACCEPTED', 'PARTIALLY_FILLED', 'FILLED', 'CANCEL_PENDING', 'CANCELLED', 'REJECTED', 'EXPIRED', 'RISK_REJECTED', 'ERROR')", name="ck_orders_status"),
+        CheckConstraint("status IN ('CREATED', 'ACCEPTED', 'PENDING_SUBMISSION', 'ACKNOWLEDGED', 'PARTIALLY_FILLED', 'FILLED', 'CANCEL_PENDING', 'CANCELLED', 'REJECTED', 'PROVIDER_REJECTED', 'RECONCILIATION_REQUIRED', 'EXPIRED', 'RISK_REJECTED', 'ERROR')", name="ck_orders_status"),
         CheckConstraint("order_type != 'LIMIT' OR (limit_price_units IS NOT NULL AND limit_price_units > 0)", name="ck_orders_limit_requires_price"),
         CheckConstraint("order_type != 'MARKET' OR limit_price_units IS NULL", name="ck_orders_market_forbids_price"),
         CheckConstraint("version > 0", name="ck_orders_version_pos"),
         UniqueConstraint("runtime_id", "order_sequence_number", name="uq_orders_runtime_seq"),
         UniqueConstraint("id", "owner_id", name="uq_orders_id_owner"),
+        UniqueConstraint("owner_id", "id", name="uq_orders_owner_id"),
         ForeignKeyConstraint(["runtime_id", "owner_id"], ["strategy_runtimes.id", "strategy_runtimes.owner_id"], name="fk_orders_runtime_owner"),
         ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_orders_account_owner"),
         ForeignKeyConstraint(["intent_id", "owner_id"], ["order_intents.id", "order_intents.owner_id"], name="fk_orders_intent_owner"),
@@ -487,4 +488,155 @@ class RiskDecision(Base):
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     __table_args__ = (
         ForeignKeyConstraint(["owner_id", "intent_id"], ["order_intents.owner_id", "order_intents.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_risk_decisions_intent_owner"),
+    )
+
+
+class ProviderConnection(Base):
+    __tablename__ = "provider_connections"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    provider_name = Column(String(50), nullable=False, default="UPSTOX")
+    environment = Column(String(50), nullable=False, default="SANDBOX")
+    credential_reference = Column(String(100), nullable=False)
+    credential_version = Column(String(50), nullable=False, default="v1")
+    status = Column(String(50), nullable=False, default="CONFIGURED")
+    last_successful_transmission_at = Column(UTCDateTime, nullable=True)
+    sanitized_error_code = Column(String(100), nullable=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "provider_name", "environment", name="uq_provider_conns_owner_prov_env"),
+        CheckConstraint("environment = 'SANDBOX'", name="ck_provider_connections_env_sandbox"),
+        CheckConstraint("provider_name = 'UPSTOX'", name="ck_provider_connections_provider_upstox"),
+        CheckConstraint("status IN ('CONFIGURED', 'DISABLED', 'ERROR')", name="ck_provider_connections_status"),
+    )
+
+
+class ProviderInstrumentMapping(Base):
+    __tablename__ = "provider_instrument_mappings"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    tradepro_instrument_id = Column(String(100), nullable=False, index=True)
+    provider_instrument_token = Column(String(100), nullable=False)
+    exchange = Column(String(20), nullable=False)
+    segment = Column(String(20), nullable=False)
+    symbol = Column(String(100), nullable=False)
+    expiry_date = Column(UTCDateTime, nullable=True)
+    strike_price_units = Column(BigInteger, nullable=True)
+    option_type = Column(String(10), nullable=True)
+    lot_size_units = Column(Integer, nullable=False, default=1)
+    tick_size_units = Column(Integer, nullable=False, default=5)
+    freeze_quantity_units = Column(Integer, nullable=False, default=1800)
+    verification_status = Column(String(20), nullable=False, default="UNVERIFIED")
+    verified_by = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    verified_at = Column(UTCDateTime, nullable=True)
+    verification_audit_json = Column(JSON, nullable=True)
+    mapping_version = Column(Integer, nullable=False, default=1)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "tradepro_instrument_id", "mapping_version", name="uq_prov_inst_map_owner_inst_ver"),
+        CheckConstraint("verification_status IN ('UNVERIFIED', 'VERIFIED', 'REJECTED', 'DISABLED')", name="ck_prov_inst_map_status"),
+    )
+
+
+class SubmissionOutbox(Base):
+    __tablename__ = "submission_outbox"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    order_id = Column(String(36), nullable=False, index=True)
+    action_type = Column(String(20), nullable=False)
+    priority = Column(Integer, nullable=False, default=10, index=True)
+    status = Column(String(30), nullable=False, default="PENDING")
+    idempotency_key = Column(String(100), nullable=False)
+    canonical_payload_hash = Column(String(64), nullable=False)
+    payload_json = Column(JSON, nullable=False)
+    claim_lease_until = Column(UTCDateTime, nullable=True, index=True)
+    claimed_by = Column(String(100), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=5)
+    next_attempt_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
+    last_error_code = Column(String(100), nullable=True)
+    last_error_message = Column(String(500), nullable=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        ForeignKeyConstraint(["owner_id", "order_id"], ["orders.owner_id", "orders.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_submission_outbox_order_owner"),
+        UniqueConstraint("owner_id", "idempotency_key", name="uq_submission_outbox_owner_idem"),
+        CheckConstraint("action_type IN ('PLACE', 'CANCEL')", name="ck_submission_outbox_action_type"),
+        CheckConstraint("(action_type = 'CANCEL' AND priority = 0) OR (action_type = 'PLACE' AND priority = 10)", name="ck_submission_outbox_priority_action"),
+        CheckConstraint("status IN ('PENDING', 'CLAIMED', 'DELIVERED', 'RETRY_SCHEDULED', 'RECONCILIATION_REQUIRED', 'DEAD_LETTER')", name="ck_submission_outbox_status"),
+    )
+
+
+class ExternalOrderLink(Base):
+    __tablename__ = "external_order_links"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    order_id = Column(String(36), nullable=False, index=True)
+    provider_name = Column(String(50), nullable=False, default="UPSTOX")
+    provider_order_id = Column(String(100), nullable=False, index=True)
+    submitted_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        ForeignKeyConstraint(["owner_id", "order_id"], ["orders.owner_id", "orders.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_external_order_links_order_owner"),
+        UniqueConstraint("owner_id", "provider_order_id", name="uq_ext_order_links_owner_prov_id"),
+        CheckConstraint("provider_name = 'UPSTOX'", name="ck_external_order_links_provider"),
+    )
+
+
+class ReconciliationRecord(Base):
+    __tablename__ = "reconciliation_records"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=False, index=True)
+    order_id = Column(String(36), nullable=False, index=True)
+    outbox_id = Column(String(36), nullable=False, index=True)
+    status = Column(String(10), nullable=False, server_default='OPEN')
+    resolution_type = Column(String(30), nullable=True)
+    resolved_by = Column(String(36), ForeignKey("users.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=True)
+    provider_order_reference = Column(String(100), nullable=True)
+    notes = Column(String(1000), nullable=True)
+    resolved_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('OPEN', 'RESOLVED')", name="ck_reconciliation_records_status"),
+        CheckConstraint("resolution_type IN ('PLACE_CONFIRMED', 'PLACE_REJECTED', 'CANCEL_CONFIRMED', 'CANCEL_NOT_CONFIRMED')", name="ck_reconciliation_records_resolution_type"),
+        CheckConstraint(
+            "(status = 'OPEN' AND resolution_type IS NULL AND resolved_by IS NULL AND resolved_at IS NULL) OR "
+            "(status = 'RESOLVED' AND resolution_type IS NOT NULL AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)",
+            name="ck_reconciliation_records_lifecycle"
+        ),
+        ForeignKeyConstraint(["owner_id", "order_id"], ["orders.owner_id", "orders.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_reconciliation_records_order_owner"),
+        ForeignKeyConstraint(["owner_id", "outbox_id"], ["submission_outbox.owner_id", "submission_outbox.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_reconciliation_records_outbox_owner"),
+        UniqueConstraint("owner_id", "outbox_id", name="uq_reconciliation_records_owner_outbox"),
+    )
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    worker_id = Column(String(100), nullable=False, unique=True, index=True)
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    provider_name = Column(String(50), nullable=False, default="UPSTOX")
+    status = Column(String(20), nullable=False, default="HEALTHY")
+    last_heartbeat_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    batch_count = Column(Integer, nullable=False, default=0)
+    processed_count = Column(Integer, nullable=False, default=0)
+    error_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('HEALTHY', 'STOPPED', 'ERROR')", name="ck_worker_heartbeats_status"),
     )

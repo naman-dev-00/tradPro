@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from src.database import Base, get_db, get_read_only_db
+from src.database import Base, get_db, get_read_only_db, create_db_engine
 from src.main import app
 from src.models import User
 from src.auth.security import hash_password
@@ -15,6 +15,11 @@ SQLALCHEMY_DATABASE_URL = "sqlite:///./test_tradepro.db"
 
 @pytest.fixture(name="session")
 def session_fixture():
+    if os.path.exists("./test_tradepro.db"):
+        try:
+            os.remove("./test_tradepro.db")
+        except Exception:
+            pass
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL,
         connect_args={"check_same_thread": False}
@@ -47,18 +52,20 @@ def db_session_fixture(session):
 
 @pytest.fixture(name="test_user")
 def test_user_fixture(session):
-    user = User(
-        username="default_test_editor",
-        normalized_username="default_test_editor",
-        email="editor@tradepro.test",
-        normalized_email="editor@tradepro.test",
-        hashed_password=hash_password("DefaultPassword123!"),
-        role="EDITOR",
-        is_active=True
-    )
-    session.add(user)
-    session.commit()
-    session.refresh(user)
+    user = session.query(User).filter(User.normalized_username == "default_test_editor").first()
+    if not user:
+        user = User(
+            username="default_test_editor",
+            normalized_username="default_test_editor",
+            email="editor@tradepro.test",
+            normalized_email="editor@tradepro.test",
+            hashed_password=hash_password("DefaultPassword123!"),
+            role="EDITOR",
+            is_active=True
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
     return user
 
 @pytest.fixture(name="client")

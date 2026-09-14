@@ -39,7 +39,7 @@ from src.schemas import (
 )
 from src.auth.dependencies import get_current_user, require_roles, require_csrf
 from src.auth.rate_limiter import rate_limiter
-from src.services.paper_service import PaperService, ResourceNotFoundError
+from src.services.paper_service import PaperService, ResourceNotFoundError, ConflictError
 from src.engine.paper.units import units_to_decimal
 
 router = APIRouter(prefix="/api/v1/paper", tags=["paper"])
@@ -335,6 +335,8 @@ def create_runtime(
             action_policy_id=payload.action_policy_id,
             risk_policy_id=payload.risk_policy_id,
             timeframe=payload.timeframe,
+            trading_mode=payload.trading_mode or "PAPER",
+            instrument_mapping_id=payload.instrument_mapping_id,
         )
         resp = StrategyRuntimeResponse.model_validate(runtime)
         save_idempotency(db, current_user.id, idempotency_key, "create_runtime", payload.model_dump(mode="json"), status.HTTP_201_CREATED, resp.model_dump(mode="json"))
@@ -461,6 +463,8 @@ def step_runtime(
         return PaperService.step_runtime(db, id, current_user.id, step_count=payload.step_count)
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ConflictError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -585,6 +589,8 @@ def cancel_order(
         )
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ConflictError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

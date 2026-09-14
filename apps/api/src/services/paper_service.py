@@ -1,6 +1,7 @@
 import uuid
 import json
 import logging
+import hashlib
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, Any, List, Optional, Tuple
@@ -25,6 +26,9 @@ from src.models import (
     ActionDecision,
     RiskDecision,
     ApiIdempotencyRecord,
+    SubmissionOutbox,
+    ProviderInstrumentMapping,
+    ExternalOrderLink,
 )
 from src.engine.paper.models import (
     TradingMode,
@@ -58,6 +62,11 @@ logger = logging.getLogger("tradepro.paper_service")
 
 class ResourceNotFoundError(ValueError):
     """Raised when a referenced resource does not exist or is not owned by the caller."""
+    pass
+
+
+class ConflictError(ValueError):
+    """Raised on idempotency conflict."""
     pass
 
 class PaperService:
@@ -221,7 +230,9 @@ class PaperService:
         dataset_id: str,
         action_policy_id: Optional[str] = None,
         risk_policy_id: Optional[str] = None,
-        timeframe: str = "15m"
+        timeframe: str = "15m",
+        trading_mode: str = TradingMode.PAPER.value,
+        instrument_mapping_id: Optional[str] = None,
     ) -> StrategyRuntime:
         # Check strategy & account ownership
         strat = db.query(Strategy).filter(Strategy.id == strategy_id, Strategy.owner_id == owner_id).first()
@@ -232,6 +243,11 @@ class PaperService:
         if not acct:
             raise ResourceNotFoundError(f"Paper account '{account_id}' not found.")
 
+        is_sandbox_mode = trading_mode in (
+            TradingMode.BROKER_SANDBOX.value,
+            TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value,
+        )
+
         # Check action policy ownership if supplied
         if action_policy_id:
             action_policy = db.query(StrategyActionPolicy).filter(
@@ -241,7 +257,7 @@ class PaperService:
             if not action_policy:
                 raise ResourceNotFoundError(f"Action policy '{action_policy_id}' not found.")
         else:
-            action_policy = PaperService._synthesize_default_action_policy(db, owner_id, strat)
+            action_policy = PaperService._synthesize_default_action_policy(db, owner_id, strat, is_sandbox=is_sandbox_mode)
             action_policy_id = action_policy.id
 
         # Check risk policy ownership if supplied
@@ -273,13 +289,61 @@ class PaperService:
         if dataset_id != inst_spec.execution_dataset_id:
             raise ValueError(f"Dataset mismatch: runtime execution dataset '{dataset_id}' does not match instrument execution dataset '{inst_spec.execution_dataset_id}'.")
 
-        # Transactionally freeze all snapshots at runtime creation time (Item 3)
+        # Transactionally freeze all snapshots at runtime creation time (Item 3 & Item 5)
         strategy_snapshot = dict(strat.payload)
         action_policy_snapshot = dict(action_policy.payload)
         risk_policy_snapshot = dict(risk_policy.payload)
         instrument_spec_snapshot = inst_spec.model_dump(mode="json")
         fee_model_snapshot = {"fee_basis_points": 5, "flat_fee_units": 2000}
         slippage_model_snapshot = {"model": "FIXED_BPS", "basis_points": 5}
+
+        # If sandbox mode: enforce explicit verified mapping and freeze it
+        is_sandbox_mode = trading_mode in (
+            TradingMode.BROKER_SANDBOX.value,
+            TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value,
+        )
+        if is_sandbox_mode:
+            if instrument_mapping_id:
+                mapping = db.query(ProviderInstrumentMapping).filter(
+                    ProviderInstrumentMapping.id == instrument_mapping_id,
+                    ProviderInstrumentMapping.owner_id == owner_id,
+                ).first()
+                if not mapping:
+                    raise ResourceNotFoundError(f"Instrument mapping '{instrument_mapping_id}' not found.")
+            else:
+                mapping = db.query(ProviderInstrumentMapping).filter(
+                    ProviderInstrumentMapping.owner_id == owner_id,
+                    ProviderInstrumentMapping.tradepro_instrument_id == inst_id,
+                ).order_by(ProviderInstrumentMapping.mapping_version.desc()).first()
+                if not mapping:
+                    raise ResourceNotFoundError(
+                        f"Explicit verified provider instrument mapping required for instrument '{inst_id}'."
+                    )
+
+            if mapping.verification_status != "VERIFIED":
+                raise ValueError(
+                    f"Instrument mapping '{mapping.id}' status is '{mapping.verification_status}'; must be 'VERIFIED'."
+                )
+
+            now_utc = datetime.now(timezone.utc)
+            if mapping.expiry_date and mapping.expiry_date <= now_utc:
+                raise ValueError(f"Instrument mapping '{mapping.id}' has expired.")
+
+            # Freeze complete verified mapping into snapshot
+            instrument_spec_snapshot["provider_mapping"] = {
+                "mapping_id": mapping.id,
+                "provider_name": "UPSTOX",
+                "provider_instrument_token": mapping.provider_instrument_token,
+                "symbol": mapping.symbol,
+                "exchange": mapping.exchange,
+                "segment": mapping.segment,
+                "lot_size_units": mapping.lot_size_units,
+                "tick_size_units": mapping.tick_size_units,
+                "verification_status": mapping.verification_status,
+                "verified_at": mapping.verified_at.isoformat() if mapping.verified_at else None,
+                "mapping_version": mapping.mapping_version,
+                "frozen_at": now_utc.isoformat(),
+            }
 
         runtime = StrategyRuntime(
             owner_id=owner_id,
@@ -288,7 +352,7 @@ class PaperService:
             risk_policy_id=risk_policy_id,
             account_id=account_id,
             status=RuntimeStatus.DRAFT.value,
-            trading_mode=TradingMode.PAPER.value,
+            trading_mode=trading_mode,
             dataset_id=dataset_id,
             timeframe=timeframe,
             strategy_snapshot=strategy_snapshot,
@@ -322,13 +386,15 @@ class PaperService:
         return runtime
 
     @staticmethod
-    def _synthesize_default_action_policy(db: Session, owner_id: str, strategy: Strategy) -> StrategyActionPolicy:
+    def _synthesize_default_action_policy(db: Session, owner_id: str, strategy: Strategy, is_sandbox: bool = False) -> StrategyActionPolicy:
         # Look for existing policy
         existing = db.query(StrategyActionPolicy).filter(StrategyActionPolicy.strategy_id == strategy.id).first()
         if existing:
             return existing
 
         default_inst = "synthetic_candidate_option_pe_23000_15m"
+        order_type = "LIMIT" if is_sandbox else "MARKET"
+        limit_price = 250.0 if is_sandbox else None
         payload = {
             "entry_mapping": {
                 "mapping_id": "auto_entry_1",
@@ -336,7 +402,8 @@ class PaperService:
                 "trigger_status": "ON_TRUE",
                 "instrument_id": default_inst,
                 "side": "BUY",
-                "order_type": "MARKET",
+                "order_type": order_type,
+                "limit_price": limit_price,
                 "quantity": 50,
                 "time_in_force": "DAY",
                 "cooldown_bars": 1,
@@ -554,7 +621,47 @@ class PaperService:
         db.add(evt1)
         db.flush()
 
-        # Immediate paper broker confirmation
+        # Check if runtime is in a sandbox mode
+        runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == order.runtime_id).first()
+        is_sandbox = runtime and runtime.trading_mode in (TradingMode.BROKER_SANDBOX.value, TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+
+        if is_sandbox:
+            # Sandbox mode: do NOT immediately confirm CANCELLED or release cash!
+            # Queue a CANCEL outbox record. Cash is released upon confirmed provider cancellation or manual resolution.
+            cancel_payload = {"order_id": order.id, "reason": reason}
+            canonical_json = canonicalize_json(cancel_payload)
+            payload_hash = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+            active_cancel_outbox = db.query(SubmissionOutbox).filter(
+                SubmissionOutbox.owner_id == order.owner_id,
+                SubmissionOutbox.order_id == order.id,
+                SubmissionOutbox.action_type == "CANCEL",
+                SubmissionOutbox.status.in_(["PENDING", "CLAIMED", "RETRY_SCHEDULED", "RECONCILIATION_REQUIRED"]),
+            ).first()
+
+            if not active_cancel_outbox:
+                prior_cancel_count = db.query(SubmissionOutbox).filter(
+                    SubmissionOutbox.owner_id == order.owner_id,
+                    SubmissionOutbox.order_id == order.id,
+                    SubmissionOutbox.action_type == "CANCEL",
+                ).count()
+                idem_key = f"cancel:{order.id}:{prior_cancel_count}" if prior_cancel_count > 0 else f"cancel:{order.id}"
+                outbox = SubmissionOutbox(
+                    owner_id=order.owner_id,
+                    order_id=order.id,
+                    action_type="CANCEL",
+                    priority=0,
+                    status="PENDING",
+                    idempotency_key=idem_key,
+                    canonical_payload_hash=payload_hash,
+                    payload_json=cancel_payload,
+                )
+                db.add(outbox)
+
+            db.commit()
+            db.refresh(order)
+            return order
+
+        # Immediate paper broker confirmation (PAPER mode only)
         validate_order_transition(OrderStatus.CANCEL_PENDING, OrderStatus.CANCELLED, actor="PAPER_BROKER", reason_code=reason)
         order.status = OrderStatus.CANCELLED.value
 
@@ -1135,7 +1242,10 @@ class PaperService:
             db.add(order)
             return intent
 
-        # Passed risk -> Create order in ACCEPTED & reserve cash if BUY
+        # Passed risk -> Create order in ACCEPTED (for PAPER) or PENDING_SUBMISSION (for SANDBOX)
+        is_sandbox = runtime.trading_mode in (TradingMode.BROKER_SANDBOX.value, TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+        initial_status = OrderStatus.PENDING_SUBMISSION.value if is_sandbox else OrderStatus.ACCEPTED.value
+
         o_seq = db.query(func.coalesce(func.max(Order.order_sequence_number), 0)).filter(Order.runtime_id == runtime.id).scalar() + 1
         order = Order(
             owner_id=runtime.owner_id,
@@ -1149,19 +1259,19 @@ class PaperService:
             quantity_units=qty_units,
             limit_price_units=limit_price_units,
             filled_quantity_units=0,
-            status=OrderStatus.ACCEPTED.value,
+            status=initial_status,
         )
         db.add(order)
         db.flush()
 
-        # Record CREATED -> ACCEPTED event
+        # Record CREATED -> initial_status event
         evt = OrderEvent(
             order_id=order.id,
             sequence_number=1,
             previous_status=OrderStatus.CREATED.value,
-            new_status=OrderStatus.ACCEPTED.value,
+            new_status=initial_status,
             actor="SYSTEM_OMS",
-            reason_code="RISK_CHECK_PASSED",
+            reason_code="RISK_CHECK_PASSED" if not is_sandbox else "RISK_CHECK_PASSED_QUEUED_FOR_SANDBOX",
         )
         db.add(evt)
 
@@ -1191,6 +1301,54 @@ class PaperService:
             )
             db.add(ledger)
             db.flush()
+
+        # If sandbox mode: create submission outbox record
+        if is_sandbox:
+            frozen_mapping = (runtime.instrument_spec_snapshot or {}).get("provider_mapping")
+            if not frozen_mapping or "provider_instrument_token" not in frozen_mapping:
+                raise ValueError(f"Runtime '{runtime.id}' lacks a frozen verified provider instrument mapping.")
+            inst_token = frozen_mapping["provider_instrument_token"]
+
+            submit_payload = {
+                "order_id": order.id,
+                "quantity": int(units_to_decimal(qty_units, inst_spec.quantity_scale)),
+                "product": "D",
+                "validity": time_in_force,
+                "price": float(units_to_decimal(limit_price_units, inst_spec.price_scale)) if limit_price_units else 0.0,
+                "tag": "TradePro",
+                "instrument_token": inst_token,
+                "order_type": order_type.value,
+                "transaction_type": side.value,
+                "disclosed_quantity": 0,
+                "trigger_price": 0.0,
+                "is_amo": False,
+                "slice": False,
+            }
+            canonical_json = canonicalize_json(submit_payload)
+            payload_hash = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+            idem_key = f"place:{order.id}"
+
+            existing_outbox = db.query(SubmissionOutbox).filter(
+                SubmissionOutbox.owner_id == runtime.owner_id,
+                SubmissionOutbox.idempotency_key == idem_key,
+            ).first()
+
+            if existing_outbox:
+                if existing_outbox.canonical_payload_hash != payload_hash:
+                    raise ConflictError("Outbox idempotency conflict: key reused with different payload.")
+            else:
+                outbox = SubmissionOutbox(
+                    owner_id=runtime.owner_id,
+                    order_id=order.id,
+                    action_type="PLACE",
+                    priority=10,
+                    status="PENDING",
+                    idempotency_key=idem_key,
+                    canonical_payload_hash=payload_hash,
+                    payload_json=submit_payload,
+                )
+                db.add(outbox)
+                db.flush()
 
         return intent
 
