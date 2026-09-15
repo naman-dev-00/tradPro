@@ -19,8 +19,17 @@ class InvalidRuntimeTransitionError(Exception):
 VALID_ORDER_TRANSITIONS: Dict[OrderStatus, Set[OrderStatus]] = {
     OrderStatus.CREATED: {
         OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_SUBMISSION,
         OrderStatus.RISK_REJECTED,
         OrderStatus.REJECTED,
+        OrderStatus.ERROR,
+    },
+    OrderStatus.PENDING_SUBMISSION: {
+        OrderStatus.ACKNOWLEDGED,
+        OrderStatus.PROVIDER_REJECTED,
+        OrderStatus.RECONCILIATION_REQUIRED,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.CANCELLED,
         OrderStatus.ERROR,
     },
     OrderStatus.ACCEPTED: {
@@ -32,6 +41,14 @@ VALID_ORDER_TRANSITIONS: Dict[OrderStatus, Set[OrderStatus]] = {
         OrderStatus.EXPIRED,
         OrderStatus.ERROR,
     },
+    OrderStatus.ACKNOWLEDGED: {
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.FILLED,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.CANCELLED,
+        OrderStatus.RECONCILIATION_REQUIRED,
+        OrderStatus.ERROR,
+    },
     OrderStatus.PARTIALLY_FILLED: {
         OrderStatus.PARTIALLY_FILLED,
         OrderStatus.FILLED,
@@ -41,14 +58,23 @@ VALID_ORDER_TRANSITIONS: Dict[OrderStatus, Set[OrderStatus]] = {
         OrderStatus.ERROR,
     },
     OrderStatus.CANCEL_PENDING: {
+        OrderStatus.ACKNOWLEDGED,  # Safe dead-letter revert when cancel fails before transmission
         OrderStatus.CANCELLED,
         OrderStatus.FILLED,  # Race: fill occurred while cancel was pending
+        OrderStatus.RECONCILIATION_REQUIRED,
+        OrderStatus.ERROR,
+    },
+    OrderStatus.RECONCILIATION_REQUIRED: {
+        OrderStatus.ACKNOWLEDGED,
+        OrderStatus.CANCELLED,
+        OrderStatus.PROVIDER_REJECTED,
         OrderStatus.ERROR,
     },
     # Terminal states have empty sets
     OrderStatus.FILLED: set(),
     OrderStatus.CANCELLED: set(),
     OrderStatus.REJECTED: set(),
+    OrderStatus.PROVIDER_REJECTED: set(),
     OrderStatus.EXPIRED: set(),
     OrderStatus.RISK_REJECTED: set(),
     OrderStatus.ERROR: set(),

@@ -177,9 +177,28 @@ def cmd_transfer_legacy(args):
     finally:
         db.close()
 
+def cmd_sandbox_worker(args):
+    from src.engine.sandbox.outbox_worker import SandboxOutboxWorker
+    worker = SandboxOutboxWorker(
+        worker_id=args.worker_id,
+        batch_size=args.batch_size,
+        lease_duration_seconds=args.lease_duration,
+        poll_interval_seconds=args.poll_interval,
+    )
+    worker.run(max_runs=args.max_runs)
+
 def main():
     parser = argparse.ArgumentParser(description="TradePro Administrative CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # sandbox-outbox-worker
+    worker_p = subparsers.add_parser("sandbox-outbox-worker", help="Run the Upstox sandbox outbox transmission worker")
+    worker_p.add_argument("--batch-size", type=int, default=10, help="Batch size for claiming outbox records")
+    worker_p.add_argument("--lease-duration", type=int, default=30, help="Lease duration in seconds")
+    worker_p.add_argument("--poll-interval", type=float, default=1.0, help="Poll interval in seconds")
+    worker_p.add_argument("--worker-id", default=None, help="Explicit worker ID identifier")
+    worker_p.add_argument("--max-runs", type=int, default=None, help="Maximum worker loop iterations (for testing)")
+    worker_p.set_defaults(func=cmd_sandbox_worker)
 
     # users group
     users_parser = subparsers.add_parser("users", help="User administration commands")

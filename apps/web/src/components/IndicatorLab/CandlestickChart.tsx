@@ -135,10 +135,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
         });
 
         const lineData = cfg.results
-          .filter((r) => r.available && r.raw_value !== null)
+          .filter((r) => r.available && typeof r.value === "number")
           .map((r) => ({
             time: (new Date(r.timestamp).getTime() / 1000) as Time,
-            value: r.raw_value as number,
+            value: r.value as number,
           }));
 
         lineSeries.setData(lineData);
@@ -153,10 +153,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
           });
 
           const lineData = cfg.results
-            .filter((r) => r.available && r.raw_value && r.raw_value[levelKey] !== undefined)
+            .filter((r) => r.available && r.value && typeof r.value === "object" && (r.value as any)[levelKey] !== undefined && (r.value as any)[levelKey] !== null)
             .map((r) => ({
               time: (new Date(r.timestamp).getTime() / 1000) as Time,
-              value: r.raw_value[levelKey] as number,
+              value: (r.value as any)[levelKey] as number,
             }));
 
           lineSeries.setData(lineData);
@@ -191,10 +191,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
           });
 
           const rsiData = cfg.results
-            .filter((r) => r.available && r.raw_value !== null)
+            .filter((r) => r.available && typeof r.value === "number")
             .map((r) => ({
               time: (new Date(r.timestamp).getTime() / 1000) as Time,
-              value: r.raw_value as number,
+              value: r.value as number,
             }));
 
           rsiSeries.setData(rsiData);
@@ -229,10 +229,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
           });
           macdLine.setData(
             cfg.results
-              .filter((r) => r.available && r.raw_value?.macd_line !== undefined)
+              .filter((r) => r.available && typeof r.value === "object" && (r.value as any)?.macd_line !== undefined && (r.value as any)?.macd_line !== null)
               .map((r) => ({
                 time: (new Date(r.timestamp).getTime() / 1000) as Time,
-                value: r.raw_value.macd_line as number,
+                value: (r.value as any).macd_line as number,
               }))
           );
 
@@ -244,10 +244,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
           });
           signalLine.setData(
             cfg.results
-              .filter((r) => r.available && r.raw_value?.signal_line !== undefined)
+              .filter((r) => r.available && typeof r.value === "object" && (r.value as any)?.signal_line !== undefined && (r.value as any)?.signal_line !== null)
               .map((r) => ({
                 time: (new Date(r.timestamp).getTime() / 1000) as Time,
-                value: r.raw_value.signal_line as number,
+                value: (r.value as any).signal_line as number,
               }))
           );
 
@@ -257,11 +257,11 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
           });
           histSeries.setData(
             cfg.results
-              .filter((r) => r.available && r.raw_value?.histogram !== undefined)
+              .filter((r) => r.available && typeof r.value === "object" && (r.value as any)?.histogram !== undefined && (r.value as any)?.histogram !== null)
               .map((r) => ({
                 time: (new Date(r.timestamp).getTime() / 1000) as Time,
-                value: r.raw_value.histogram as number,
-                color: (r.raw_value.histogram || 0) >= 0 ? "#10b981" : "#ef4444",
+                value: (r.value as any).histogram as number,
+                color: ((r.value as any).histogram || 0) >= 0 ? "#10b981" : "#ef4444",
               }))
           );
         });
@@ -294,10 +294,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
             });
             volSeries.setData(
               cfg.results
-                .filter((r) => r.available && r.raw_value !== null)
+                .filter((r) => r.available && typeof r.value === "number")
                 .map((r) => ({
                   time: (new Date(r.timestamp).getTime() / 1000) as Time,
-                  value: r.raw_value as number,
+                  value: r.value as number,
                 }))
             );
           } else {
@@ -308,10 +308,10 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
             });
             avgVolSeries.setData(
               cfg.results
-                .filter((r) => r.available && r.raw_value !== null)
+                .filter((r) => r.available && typeof r.value === "number")
                 .map((r) => ({
                   time: (new Date(r.timestamp).getTime() / 1000) as Time,
-                  value: r.raw_value as number,
+                  value: r.value as number,
                 }))
             );
           }

@@ -1,11 +1,12 @@
 "use client";
 
 import React from "react";
-import { StrategyRuntime, KillSwitchStatus } from "../../lib/api";
+import { StrategyRuntime, KillSwitchStatus, SandboxReadinessResponse } from "../../lib/api";
 
 interface Props {
   runtime: StrategyRuntime | null;
   killSwitch: KillSwitchStatus | null;
+  readiness?: SandboxReadinessResponse | null;
   onStart: () => void;
   onPause: () => void;
   onResume: () => void;
@@ -18,6 +19,7 @@ interface Props {
 export const RuntimeControlHeader: React.FC<Props> = ({
   runtime,
   killSwitch,
+  readiness,
   onStart,
   onPause,
   onResume,
@@ -27,24 +29,65 @@ export const RuntimeControlHeader: React.FC<Props> = ({
   loading,
 }) => {
   const isKillSwitchActive = killSwitch?.global_active || killSwitch?.user_active;
+  const isSandbox = runtime?.trading_mode === "BROKER_SANDBOX";
+  const isFixture = runtime?.trading_mode === "BROKER_SANDBOX_RECORDED_FIXTURE";
+  const submissionBlocked = isKillSwitchActive || (isSandbox && readiness !== null && readiness !== undefined && !readiness.ready_for_submission);
 
   return (
     <div className="space-y-4">
-      {/* Prominent Mandatory Simulation Disclaimer */}
-      <div
-        id="paper-simulation-banner"
-        className="bg-amber-950/40 border border-amber-600/50 rounded-lg p-3 text-center"
-      >
-        <span className="text-amber-300 font-bold tracking-wider text-sm sm:text-base flex items-center justify-center gap-2">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-          PAPER SIMULATION — NO LIVE ORDERS
-        </span>
-        <p className="text-xs text-amber-200/70 mt-1">
-          Simulated execution environment. Zero external broker connectivity. Results are educational and do not predict live market performance.
-        </p>
-      </div>
+      {/* Prominent Mandatory Disclosure Banner */}
+      {isSandbox ? (
+        <div
+          id="sandbox-transmission-banner"
+          className="bg-amber-950/40 border border-amber-600/70 rounded-lg p-3 text-center space-y-1.5"
+        >
+          <span className="text-amber-300 font-bold tracking-wider text-sm sm:text-base flex items-center justify-center gap-2">
+            <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            UPSTOX SANDBOX MODE — EXTERNAL ORDER TRANSMISSION
+          </span>
+          <div className="text-xs text-amber-200/90 space-y-1 max-w-4xl mx-auto">
+            <p>
+              External network transmission is{" "}
+              <span className={`font-bold ${readiness?.network_enabled ? "text-emerald-400" : "text-amber-400"}`}>
+                {readiness?.network_enabled ? "ENABLED" : "DISABLED"}
+              </span>
+              . The operator is responsible for supplying a Sandbox Apps token.
+            </p>
+            <p className="text-amber-300/70 text-[11px]">
+              TradePro cannot independently verify the token’s sandbox scope. A wrongly provisioned token could create unintended live-market exposure. The current environment is restricted to local/test execution.
+            </p>
+          </div>
+        </div>
+      ) : isFixture ? (
+        <div
+          id="sandbox-fixture-banner"
+          className="bg-blue-950/40 border border-blue-600/60 rounded-lg p-3 text-center"
+        >
+          <span className="text-blue-300 font-bold tracking-wider text-sm sm:text-base flex items-center justify-center gap-2">
+            UPSTOX SANDBOX FIXTURE MODE — LOCAL SIMULATION ONLY
+          </span>
+          <p className="text-xs text-blue-200/70 mt-1">
+            Replaying recorded Upstox sandbox order responses offline. Zero external network transmission.
+          </p>
+        </div>
+      ) : (
+        <div
+          id="paper-simulation-banner"
+          className="bg-slate-900/60 border border-slate-700/60 rounded-lg p-3 text-center"
+        >
+          <span className="text-slate-300 font-bold tracking-wider text-sm sm:text-base flex items-center justify-center gap-2">
+            <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            PAPER SIMULATION — LOCAL IN-MEMORY EXECUTION
+          </span>
+          <p className="text-xs text-slate-400 mt-1">
+            Simulated in-memory execution environment. Zero external broker connectivity.
+          </p>
+        </div>
+      )}
 
       {/* Kill Switch Alert Bar if engaged */}
       {isKillSwitchActive && (
@@ -90,6 +133,21 @@ export const RuntimeControlHeader: React.FC<Props> = ({
             <span className="text-xs text-slate-400">No Runtime Selected</span>
           )}
 
+          {runtime?.trading_mode && (
+            <span
+              id="trading-mode-badge"
+              className={`px-2 py-0.5 text-[11px] font-mono rounded border ${
+                isSandbox
+                  ? "bg-amber-950/60 text-amber-300 border-amber-700"
+                  : isFixture
+                  ? "bg-blue-950/60 text-blue-300 border-blue-700"
+                  : "bg-slate-800 text-slate-300 border-slate-700"
+              }`}
+            >
+              {runtime.trading_mode}
+            </span>
+          )}
+
           {runtime?.last_processed_candle_timestamp && (
             <span className="text-xs text-slate-400 hidden sm:inline">
               Last Bar: {new Date(runtime.last_processed_candle_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -102,7 +160,7 @@ export const RuntimeControlHeader: React.FC<Props> = ({
           {runtime?.status === "READY" && (
             <button
               id="start-runtime-btn"
-              disabled={loading || isKillSwitchActive}
+              disabled={loading || submissionBlocked}
               onClick={onStart}
               className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
             >
@@ -123,7 +181,7 @@ export const RuntimeControlHeader: React.FC<Props> = ({
 
               <button
                 id="step-1-btn"
-                disabled={loading || isKillSwitchActive}
+                disabled={loading || submissionBlocked}
                 onClick={() => onStep(1)}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
               >
@@ -132,7 +190,7 @@ export const RuntimeControlHeader: React.FC<Props> = ({
 
               <button
                 id="step-5-btn"
-                disabled={loading || isKillSwitchActive}
+                disabled={loading || submissionBlocked}
                 onClick={() => onStep(5)}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors hidden sm:inline-block"
               >
@@ -144,7 +202,7 @@ export const RuntimeControlHeader: React.FC<Props> = ({
           {runtime?.status === "PAUSED" && (
             <button
               id="resume-runtime-btn"
-              disabled={loading || isKillSwitchActive}
+              disabled={loading || submissionBlocked}
               onClick={onResume}
               className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
             >
