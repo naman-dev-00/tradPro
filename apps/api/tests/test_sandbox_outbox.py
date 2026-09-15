@@ -3,6 +3,9 @@ import json
 import pytest
 import httpx
 
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import sessionmaker
+
 from src.models import (
     AccountLedgerEntry,
     ExternalOrderLink,
@@ -31,6 +34,8 @@ from src.engine.sandbox.upstox_adapter import (
     UpstoxPlaceResult,
     UpstoxCancelResult,
     UpstoxAmbiguousError,
+    UpstoxRetryable429,
+    UpstoxClientError,
 )
 from src.engine.sandbox.outbox_worker import SandboxOutboxWorker
 from src.services.paper_service import PaperService, ConflictError
@@ -2307,3 +2312,1473 @@ def test_fail_closed_lease_recovery_idempotent_reconciliation_record(session, sa
         ReconciliationRecord.outbox_id == outbox.id,
     ).all()
     assert len(recs_after_second) == 1
+
+
+def test_marker_commit_failure_causes_zero_adapter_calls(session, sandbox_setup, monkeypatch):
+    """
+    Durability Test: If _commit_transmission_marker fails, the adapter is never called.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+
+    PaperService.step_runtime(session, runtime.id, user.id, step_count=1)
+    order = session.query(Order).filter(Order.runtime_id == runtime.id).first()
+    outbox = session.query(SubmissionOutbox).filter(SubmissionOutbox.order_id == order.id).first()
+
+    adapter_calls = []
+
+    class FailMarkerAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            adapter_calls.append("PLACE_CALLED")
+            return UpstoxPlaceResult(provider_order_id="SHOULD_NOT_HAPPEN", status="success", raw_response={})
+
+    adapter = FailMarkerAdapter()
+    worker = SandboxOutboxWorker(adapter=adapter)
+
+    # Monkey-patch _commit_transmission_marker to always fail
+    original_commit_marker = worker._commit_transmission_marker
+    def failing_marker(db, outbox, now):
+        return False  # Simulate commit failure
+    worker._commit_transmission_marker = failing_marker
+
+    worker.process_batch(session)
+
+    # Adapter was NEVER called
+    assert len(adapter_calls) == 0, f"Adapter was called despite marker failure: {adapter_calls}"
+
+
+def test_marker_visible_from_independent_session_before_adapter(session, sandbox_setup):
+    """
+    Durability Test: The transmission_started_at marker is visible from an independent
+    DB session before the adapter call occurs.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+
+    PaperService.step_runtime(session, runtime.id, user.id, step_count=1)
+    order = session.query(Order).filter(Order.runtime_id == runtime.id).first()
+    outbox = session.query(SubmissionOutbox).filter(SubmissionOutbox.order_id == order.id).first()
+    outbox_id = outbox.id
+
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    marker_visible_before_adapter = []
+
+    class VisibilityCheckAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            # At this point, marker should be committed and visible from an independent session
+            check_db = IndependentSessionFactory()
+            check_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+            marker_visible_before_adapter.append(check_outbox.transmission_started_at is not None)
+            check_db.close()
+            return UpstoxPlaceResult(provider_order_id="VIS_CHECK_1", status="success", raw_response={"order_id": "VIS_CHECK_1"})
+
+    adapter = VisibilityCheckAdapter()
+    worker = SandboxOutboxWorker(adapter=adapter)
+    worker.process_batch(session)
+
+    assert len(marker_visible_before_adapter) == 1
+    assert marker_visible_before_adapter[0] is True, "Marker was NOT visible from independent session before adapter call"
+
+
+def test_simulated_crash_after_adapter_cannot_retransmit(session, sandbox_setup):
+    """
+    Durability Test: After the adapter call, even if a crash (exception) prevents
+    the outbox from being marked DELIVERED, the marker ensures no retransmission.
+    The expired-lease recovery path must fail-closed to RECONCILIATION_REQUIRED.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    PaperService.step_runtime(session, runtime.id, user.id, step_count=1)
+    order = session.query(Order).filter(Order.runtime_id == runtime.id).first()
+    outbox = session.query(SubmissionOutbox).filter(SubmissionOutbox.order_id == order.id).first()
+
+    adapter_call_count = []
+
+    class CrashAfterAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            adapter_call_count.append(1)
+            return UpstoxPlaceResult(provider_order_id="CRASH_TEST_1", status="success", raw_response={"order_id": "CRASH_TEST_1"})
+
+    adapter = CrashAfterAdapter()
+    worker = SandboxOutboxWorker(adapter=adapter, lease_duration_seconds=5)
+
+    # Override _handle_place_action to simulate crash after adapter call
+    original_handle = worker._handle_place_action
+    def crashing_handle(db, outbox, order, token, now):
+        # Call adapter but then crash before updating outbox status
+        res = adapter.place_order(outbox.payload_json, token)
+        raise RuntimeError("Simulated worker crash after adapter call")
+    worker._handle_place_action = crashing_handle
+
+    # Process batch — will raise RuntimeError after adapter call
+    try:
+        worker.process_batch(session)
+    except RuntimeError:
+        pass
+
+    # Adapter was called exactly once
+    assert len(adapter_call_count) == 1
+
+    # Outbox should still have status=CLAIMED with transmission_started_at set
+    session.expire_all()
+    session.refresh(outbox)
+    assert outbox.transmission_started_at is not None
+    assert outbox.status == "CLAIMED"
+
+    # Simulate lease expiry: fast-forward clock
+    future = now + datetime.timedelta(seconds=60)
+    outbox.claim_lease_until = now - datetime.timedelta(seconds=1)  # Expired
+    session.commit()
+
+    # Recovery worker picks up the expired lease
+    recovery_worker = SandboxOutboxWorker(worker_id="recovery")
+    recovery_adapter_calls = []
+
+    class NoCallAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            recovery_adapter_calls.append(1)
+            return UpstoxPlaceResult(provider_order_id="SHOULD_NOT_HAPPEN", status="success", raw_response={})
+
+    recovery_worker.adapter = NoCallAdapter()
+    recovery_worker.recover_expired_leases(session, future)
+    session.commit()
+
+    # Zero adapter calls during recovery
+    assert len(recovery_adapter_calls) == 0
+
+    session.refresh(outbox)
+    assert outbox.status == "RECONCILIATION_REQUIRED"
+
+    session.refresh(order)
+    assert order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+
+    recs = session.query(ReconciliationRecord).filter(ReconciliationRecord.outbox_id == outbox.id).all()
+    assert len(recs) == 1
+    assert recs[0].status == "OPEN"
+
+
+def test_expired_cancel_with_marker_produces_reconciliation(session, sandbox_setup):
+    """
+    Durability Test: Expired CANCEL outbox with transmission_started_at marker
+    produces RECONCILIATION_REQUIRED (not RETRY_SCHEDULED) and zero network calls.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_cancel_fc",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_cancel_fc",
+        trigger_event_key="tk_cancel_fc",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=960,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.CANCEL_PENDING.value,
+    )
+    session.add(order)
+    session.flush()
+
+    # CANCEL outbox with transmission marker set (external call may have occurred)
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="CANCEL",
+        priority=0,
+        status="CLAIMED",
+        claimed_by="dead-cancel-worker",
+        claim_lease_until=now - datetime.timedelta(seconds=10),
+        idempotency_key="fc_cancel_test",
+        canonical_payload_hash="hash_cancel_fc",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        transmission_started_at=now - datetime.timedelta(seconds=15),
+    )
+    session.add(outbox)
+    session.commit()
+
+    worker = SandboxOutboxWorker(worker_id="cancel-recovery")
+    worker.recover_expired_leases(session, now)
+    session.commit()
+
+    session.refresh(outbox)
+    session.refresh(order)
+
+    assert outbox.status == "RECONCILIATION_REQUIRED"
+    assert outbox.last_error_code == "LEASE_EXPIRED_AFTER_TRANSMISSION"
+    assert order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+
+    recs = session.query(ReconciliationRecord).filter(
+        ReconciliationRecord.outbox_id == outbox.id,
+    ).all()
+    assert len(recs) == 1
+    assert recs[0].status == "OPEN"
+
+
+def test_sqlite_retry_uses_fresh_sessions(session, sandbox_setup):
+    """
+    Durability Test: SQLite lock retry in _transition_to_reconciliation creates
+    a fresh session from SessionLocal for each retry, not the failed session.
+    """
+    from unittest.mock import patch, MagicMock
+    from sqlalchemy.exc import OperationalError
+
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_fresh_sess",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_fresh",
+        trigger_event_key="tk_fresh",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=970,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="CLAIMED",
+        idempotency_key="fresh_sess_test",
+        canonical_payload_hash="hash_fresh",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        attempts=1,
+    )
+    session.add(outbox)
+    session.commit()
+
+    worker = SandboxOutboxWorker()
+
+    # Track which sessions are used for _do_reconciliation_transition
+    sessions_used = []
+    original_do_transition = worker._do_reconciliation_transition
+
+    call_count = [0]
+    def tracking_do_transition(db, outbox_arg, order_arg, error_code, error_msg):
+        sessions_used.append(id(db))
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First call (on original session): raise SQLite locked error
+            raise OperationalError(
+                statement="UPDATE",
+                params={},
+                orig=Exception("database is locked"),
+            )
+        # Subsequent calls succeed
+        return original_do_transition(db, outbox_arg, order_arg, error_code, error_msg)
+
+    worker._do_reconciliation_transition = tracking_do_transition
+
+    # This should retry with a fresh session
+    worker._transition_to_reconciliation(session, outbox, order, "FRESH_SESS_TEST", "Testing fresh sessions")
+
+    # Verify at least 2 sessions used and they are different
+    assert len(sessions_used) >= 2, f"Expected at least 2 session uses, got {len(sessions_used)}"
+    assert sessions_used[0] != sessions_used[1], "Retry used the SAME session, not a fresh one"
+
+
+def test_sqlite_retry_exhaustion_preserves_marker(session, sandbox_setup):
+    """
+    Durability Test: After SQLite lock retry exhaustion, the committed
+    transmission_started_at marker remains in the database.
+    Lease recovery will eventually force reconciliation.
+    """
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.orm import sessionmaker
+
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_exhaust",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_exhaust",
+        trigger_event_key="tk_exhaust",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=971,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="CLAIMED",
+        idempotency_key="exhaust_test",
+        canonical_payload_hash="hash_exhaust",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        attempts=1,
+        transmission_started_at=now,  # Marker already committed
+    )
+    session.add(outbox)
+    session.commit()
+
+    outbox_id = outbox.id
+    order_id = order.id
+
+    worker = SandboxOutboxWorker()
+
+    # Force every retry to fail with SQLite locked
+    def always_locked(db, outbox_arg, order_arg, error_code, error_msg):
+        raise OperationalError(
+            statement="UPDATE",
+            params={},
+            orig=Exception("database is locked"),
+        )
+    worker._do_reconciliation_transition = always_locked
+
+    with pytest.raises(OperationalError):
+        worker._transition_to_reconciliation(session, outbox, order, "EXHAUST_TEST", "Exhaustion test")
+
+    # Verify the committed marker survives
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    check_db = IndependentSessionFactory()
+    check_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    assert check_outbox.transmission_started_at is not None, "Marker was lost after retry exhaustion!"
+    check_db.close()
+
+
+def test_recovery_after_retry_exhaustion_creates_open_case(session, sandbox_setup):
+    """
+    Durability Test: After retry exhaustion, the lease expires and
+    recover_expired_leases creates one OPEN reconciliation case without transmission.
+    """
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.orm import sessionmaker
+
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_recovery_exhaust",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_rec_exhaust",
+        trigger_event_key="tk_rec_exhaust",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=972,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    # Outbox CLAIMED with marker + expired lease (simulates post-retry-exhaustion state)
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="CLAIMED",
+        claimed_by="exhausted-worker",
+        claim_lease_until=now - datetime.timedelta(seconds=5),  # Expired
+        idempotency_key="recovery_exhaust_test",
+        canonical_payload_hash="hash_rec_exhaust",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        transmission_started_at=now - datetime.timedelta(seconds=10),  # Marker present
+    )
+    session.add(outbox)
+    session.commit()
+
+    # Recovery worker
+    recovery_worker = SandboxOutboxWorker(worker_id="recovery-exhaust")
+
+    adapter_calls = []
+    class NoCallAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            adapter_calls.append(1)
+            return UpstoxPlaceResult(provider_order_id="FAIL", status="success", raw_response={})
+    recovery_worker.adapter = NoCallAdapter()
+
+    recovery_worker.recover_expired_leases(session, now)
+    session.commit()
+
+    # Zero adapter calls
+    assert len(adapter_calls) == 0
+
+    session.refresh(outbox)
+    assert outbox.status == "RECONCILIATION_REQUIRED"
+
+    session.refresh(order)
+    assert order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+
+    recs = session.query(ReconciliationRecord).filter(ReconciliationRecord.outbox_id == outbox.id).all()
+    assert len(recs) == 1
+    assert recs[0].status == "OPEN"
+
+
+def test_unrelated_operational_error_not_swallowed(session, sandbox_setup):
+    """
+    Durability Test: An OperationalError that is NOT a SQLite busy/locked error
+    is propagated immediately, not retried.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_unrelated_op",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_unrel",
+        trigger_event_key="tk_unrel",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=973,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="CLAIMED",
+        idempotency_key="unrelated_op_test",
+        canonical_payload_hash="hash_unrel",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        attempts=1,
+    )
+    session.add(outbox)
+    session.commit()
+
+    worker = SandboxOutboxWorker()
+
+    def unrelated_error(db, outbox_arg, order_arg, error_code, error_msg):
+        raise OperationalError(
+            statement="UPDATE",
+            params={},
+            orig=Exception("disk I/O error"),  # NOT "database is locked"
+        )
+    worker._do_reconciliation_transition = unrelated_error
+
+    with pytest.raises(OperationalError) as exc_info:
+        worker._transition_to_reconciliation(session, outbox, order, "UNRELATED_TEST", "Unrelated error")
+    assert "disk I/O error" in str(exc_info.value)
+
+
+def test_no_transaction_held_during_adapter_call(session, sandbox_setup):
+    """
+    Durability Test: No database transaction or row lock remains open during
+    the HTTP request (adapter call). The marker commit completes before the adapter
+    is invoked, and the adapter call happens outside any DB transaction.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+
+    PaperService.step_runtime(session, runtime.id, user.id, step_count=1)
+    order = session.query(Order).filter(Order.runtime_id == runtime.id).first()
+    outbox = session.query(SubmissionOutbox).filter(SubmissionOutbox.order_id == order.id).first()
+    outbox_id = outbox.id
+
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    transaction_state_during_adapter = []
+
+    class TransactionCheckAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            # Try to write from an independent session during the adapter call
+            # If the main session holds a write lock, this would block/fail on SQLite
+            check_db = IndependentSessionFactory()
+            try:
+                check_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+                in_txn = session.in_transaction()
+                # Verify independent session can write during adapter call
+                check_outbox.last_error_code = "WRITE_DURING_ADAPTER"
+                check_db.commit()
+                # Verify the marker is committed (visible from independent session)
+                transaction_state_during_adapter.append({
+                    "marker_visible": check_outbox.transmission_started_at is not None,
+                    "can_read": True,
+                    "can_write": True,
+                    "in_transaction": in_txn,
+                })
+            except Exception as e:
+                transaction_state_during_adapter.append({
+                    "marker_visible": False,
+                    "can_read": False,
+                    "can_write": False,
+                    "in_transaction": session.in_transaction(),
+                    "error": str(e),
+                })
+            finally:
+                check_db.close()
+            return UpstoxPlaceResult(provider_order_id="TXN_CHECK_1", status="success", raw_response={"order_id": "TXN_CHECK_1"})
+
+    adapter = TransactionCheckAdapter()
+    worker = SandboxOutboxWorker(adapter=adapter)
+    worker.process_batch(session)
+
+    assert len(transaction_state_during_adapter) == 1
+    state = transaction_state_during_adapter[0]
+    assert state["can_read"] is True, f"Independent session could not read during adapter call: {state.get('error')}"
+    assert state["can_write"] is True, f"Independent session could not write during adapter call: {state.get('error')}"
+    assert state["marker_visible"] is True, "Marker not visible from independent session during adapter call"
+    assert state["in_transaction"] is False, "Caller session held an open transaction during adapter call"
+
+
+def test_concurrent_lease_recovery_creates_one_open_record(session, sandbox_setup):
+    """
+    Durability Test: Multiple threads concurrently running recover_expired_leases
+    on the same outbox (with marker) create exactly one OPEN reconciliation record.
+    """
+    import concurrent.futures
+    from sqlalchemy.orm import sessionmaker
+
+    session.commit()
+
+    user = sandbox_setup["user"]
+    user_id = user.id
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user_id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_conc_rec",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=1000000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_conc_rec",
+        trigger_event_key="tk_conc_rec",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user_id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=974,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=1000000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user_id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="CLAIMED",
+        claimed_by="dead-conc-worker",
+        claim_lease_until=now - datetime.timedelta(seconds=10),
+        idempotency_key="conc_recovery_test",
+        canonical_payload_hash="hash_conc_rec",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        transmission_started_at=now - datetime.timedelta(seconds=15),
+    )
+    session.add(outbox)
+    session.flush()
+
+    outbox_id = outbox.id
+    order_id = order.id
+    session.commit()
+    session.close()
+
+    ThreadSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+
+    errors = []
+    def recover_in_thread(thread_idx):
+        max_retries = 10
+        for attempt in range(max_retries):
+            db = ThreadSessionFactory()
+            try:
+                worker = SandboxOutboxWorker(worker_id=f"conc-rec-{thread_idx}")
+                worker.recover_expired_leases(db, now)
+                db.commit()
+                break
+            except Exception as e:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                err_str = str(e).lower()
+                # SQLite concurrency: retry on lock contention, integrity races, and pending rollback
+                is_transient = (
+                    "database is locked" in err_str
+                    or "unique constraint" in err_str
+                    or "pendingrollbackerror" in type(e).__name__.lower()
+                    or "pending" in err_str
+                )
+                if is_transient and attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.05 * (attempt + 1))
+                    continue
+                errors.append(e)
+                break
+            finally:
+                db.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(recover_in_thread, i) for i in range(2)]
+        concurrent.futures.wait(futures)
+
+    assert len(errors) == 0, f"Concurrent recovery errors: {errors}"
+
+    # Exactly one OPEN reconciliation record
+    check_db = ThreadSessionFactory()
+    recs = check_db.query(ReconciliationRecord).filter(
+        ReconciliationRecord.outbox_id == outbox_id,
+    ).all()
+    assert len(recs) == 1
+    assert recs[0].status == "OPEN"
+
+    final_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    assert final_outbox.status == "RECONCILIATION_REQUIRED"
+
+    final_order = check_db.query(Order).filter(Order.id == order_id).first()
+    assert final_order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+
+    check_db.close()
+
+
+def test_attempt_0_rollback_cannot_discard_unrelated_pending_work(session, sandbox_setup):
+    """
+    Transaction-Ownership Test 2:
+    Proves attempt-0 rollback in _transition_to_reconciliation cannot discard
+    unrelated work from prior outbox items in the same batch or transaction.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # 1. Order 1 + Outbox 1 (Will succeed)
+    intent1 = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_roll_1",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_roll_1",
+        trigger_event_key="tk_roll_1",
+    )
+    session.add(intent1)
+    session.flush()
+
+    order1 = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent1.id,
+        account_id=acct.id,
+        order_sequence_number=981,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order1)
+    session.flush()
+
+    outbox1 = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order1.id,
+        action_type="PLACE",
+        priority=10,
+        status="PENDING",
+        idempotency_key="rollback_test_1",
+        canonical_payload_hash="hash_roll_1",
+        payload_json={"order_id": order1.id},
+        next_attempt_at=now,
+        attempts=0,
+    )
+    session.add(outbox1)
+
+    # 2. Order 2 + Outbox 2 (Will timeout, attempt 0 hits lock, retry succeeds)
+    intent2 = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_roll_2",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_roll_2",
+        trigger_event_key="tk_roll_2",
+    )
+    session.add(intent2)
+    session.flush()
+
+    order2 = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent2.id,
+        account_id=acct.id,
+        order_sequence_number=982,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order2)
+    session.flush()
+
+    outbox2 = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order2.id,
+        action_type="PLACE",
+        priority=10,
+        status="PENDING",
+        idempotency_key="rollback_test_2",
+        canonical_payload_hash="hash_roll_2",
+        payload_json={"order_id": order2.id},
+        next_attempt_at=now,
+        attempts=0,
+    )
+    session.add(outbox2)
+    session.commit()
+
+    order1_id = order1.id
+    outbox1_id = outbox1.id
+    order2_id = order2.id
+    outbox2_id = outbox2.id
+
+    class MixedBatchAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            if payload.get("order_id") == order1_id:
+                return UpstoxPlaceResult(provider_order_id="MIX_1", status="success", raw_response={"order_id": "MIX_1"})
+            raise UpstoxAmbiguousError("Timed out contacting Upstox")
+
+    worker = SandboxOutboxWorker(adapter=MixedBatchAdapter())
+
+    # Simulate attempt 0 lock contention on item 2 transition
+    orig_do_transition = worker._do_reconciliation_transition
+    transition_calls = [0]
+    def failing_attempt_0_transition(db, outbox_arg, order_arg, error_code, error_msg):
+        transition_calls[0] += 1
+        if transition_calls[0] == 1:
+            raise OperationalError(
+                statement="UPDATE",
+                params={},
+                orig=Exception("database is locked"),
+            )
+        return orig_do_transition(db, outbox_arg, order_arg, error_code, error_msg)
+
+    worker._do_reconciliation_transition = failing_attempt_0_transition
+
+    worker.process_batch(session)
+
+    # Verify attempt 0 failed and retry succeeded
+    assert transition_calls[0] >= 2, "Expected at least 2 transition attempts"
+
+    # Independent check to verify database state
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    check_db = IndependentSessionFactory()
+
+    # Item 1 was NOT discarded by Item 2's attempt-0 rollback
+    chk_order1 = check_db.query(Order).filter(Order.id == order1_id).first()
+    chk_outbox1 = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox1_id).first()
+    assert chk_order1.status == OrderStatus.ACKNOWLEDGED.value, f"Order 1 was discarded: {chk_order1.status}"
+    assert chk_outbox1.status == "DELIVERED", f"Outbox 1 was discarded: {chk_outbox1.status}"
+
+    # Item 2 successfully committed RECONCILIATION_REQUIRED
+    chk_order2 = check_db.query(Order).filter(Order.id == order2_id).first()
+    chk_outbox2 = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox2_id).first()
+    assert chk_order2.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox2.status == "RECONCILIATION_REQUIRED"
+
+    check_db.close()
+
+
+def test_fresh_session_success_survives_outer_commit_and_rollback(session, sandbox_setup):
+    """
+    Transaction-Ownership Tests 3, 4, 5:
+    Proves that a fresh-session retry commit:
+    - Remains committed after the outer worker returns.
+    - Cannot be overwritten by a subsequent outer session commit().
+    - Cannot be removed by a subsequent outer session rollback().
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_survive",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_surv",
+        trigger_event_key="tk_surv",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=983,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="PENDING",
+        idempotency_key="survive_test",
+        canonical_payload_hash="hash_surv",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        attempts=0,
+    )
+    session.add(outbox)
+    session.commit()
+
+    order_id = order.id
+    outbox_id = outbox.id
+
+    class TimeoutAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            raise UpstoxAmbiguousError("Timeout in survive test")
+
+    worker = SandboxOutboxWorker(adapter=TimeoutAdapter())
+
+    # Force attempt 0 to encounter SQLite lock contention
+    orig_do_transition = worker._do_reconciliation_transition
+    transition_calls = [0]
+    def lock_attempt_0(db, outbox_arg, order_arg, error_code, error_msg):
+        transition_calls[0] += 1
+        if transition_calls[0] == 1:
+            raise OperationalError(
+                statement="UPDATE",
+                params={},
+                orig=Exception("database is locked"),
+            )
+        return orig_do_transition(db, outbox_arg, order_arg, error_code, error_msg)
+
+    worker._do_reconciliation_transition = lock_attempt_0
+
+    # Process batch via caller session
+    worker.process_batch(session)
+
+    # 1. Verify fresh session committed and survives worker return
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    check_db = IndependentSessionFactory()
+    chk_order = check_db.query(Order).filter(Order.id == order_id).first()
+    chk_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    assert chk_order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox.status == "RECONCILIATION_REQUIRED"
+
+    # 2. Outer caller commit cannot overwrite or invalidate
+    session.commit()
+    check_db.expire_all()
+    chk_order = check_db.query(Order).filter(Order.id == order_id).first()
+    chk_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    assert chk_order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox.status == "RECONCILIATION_REQUIRED"
+
+    # 3. Outer caller rollback cannot undo or remove
+    session.rollback()
+    check_db.expire_all()
+    chk_order = check_db.query(Order).filter(Order.id == order_id).first()
+    chk_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    assert chk_order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox.status == "RECONCILIATION_REQUIRED"
+
+    check_db.close()
+
+
+def test_worker_safely_processes_next_batch_item_after_retry_success(session, sandbox_setup):
+    """
+    Transaction-Ownership Test 6:
+    Proves that when item 1 in a batch transitions to reconciliation via a fresh-session
+    retry, the outer caller session remains clean and fully capable of processing item 2.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Item 1: Will timeout and retry
+    intent1 = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_seq_1",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_seq_1",
+        trigger_event_key="tk_seq_1",
+    )
+    session.add(intent1)
+    session.flush()
+
+    order1 = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent1.id,
+        account_id=acct.id,
+        order_sequence_number=984,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order1)
+    session.flush()
+
+    outbox1 = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order1.id,
+        action_type="PLACE",
+        priority=10,
+        status="PENDING",
+        idempotency_key="seq_test_1",
+        canonical_payload_hash="hash_seq_1",
+        payload_json={"order_id": order1.id},
+        next_attempt_at=now,
+        attempts=0,
+    )
+    session.add(outbox1)
+
+    # Item 2: Will succeed cleanly
+    intent2 = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_seq_2",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_seq_2",
+        trigger_event_key="tk_seq_2",
+    )
+    session.add(intent2)
+    session.flush()
+
+    order2 = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent2.id,
+        account_id=acct.id,
+        order_sequence_number=985,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order2)
+    session.flush()
+
+    outbox2 = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order2.id,
+        action_type="PLACE",
+        priority=10,
+        status="PENDING",
+        idempotency_key="seq_test_2",
+        canonical_payload_hash="hash_seq_2",
+        payload_json={"order_id": order2.id},
+        next_attempt_at=now,
+        attempts=0,
+    )
+    session.add(outbox2)
+    session.commit()
+
+    order1_id = order1.id
+    outbox1_id = outbox1.id
+    order2_id = order2.id
+    outbox2_id = outbox2.id
+
+    class SequentialAdapter(UpstoxSandboxAdapter):
+        def place_order(self, payload, token):
+            if payload.get("order_id") == order1_id:
+                raise UpstoxAmbiguousError("Timeout on item 1")
+            return UpstoxPlaceResult(provider_order_id="SEQ_2_OK", status="success", raw_response={"order_id": "SEQ_2_OK"})
+
+    worker = SandboxOutboxWorker(adapter=SequentialAdapter())
+
+    # Item 1 hits lock contention on attempt 0, succeeds on attempt 1
+    orig_do_transition = worker._do_reconciliation_transition
+    transition_calls = [0]
+    def lock_item1_attempt0(db, outbox_arg, order_arg, error_code, error_msg):
+        transition_calls[0] += 1
+        if transition_calls[0] == 1:
+            raise OperationalError(
+                statement="UPDATE",
+                params={},
+                orig=Exception("database is locked"),
+            )
+        return orig_do_transition(db, outbox_arg, order_arg, error_code, error_msg)
+
+    worker._do_reconciliation_transition = lock_item1_attempt0
+
+    # Process the entire batch
+    processed = worker.process_batch(session)
+    assert processed == 2
+
+    # Verify Item 1 reached RECONCILIATION_REQUIRED
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    check_db = IndependentSessionFactory()
+
+    chk_order1 = check_db.query(Order).filter(Order.id == order1_id).first()
+    chk_outbox1 = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox1_id).first()
+    assert chk_order1.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox1.status == "RECONCILIATION_REQUIRED"
+
+    # Verify Item 2 was processed successfully despite earlier retry
+    chk_order2 = check_db.query(Order).filter(Order.id == order2_id).first()
+    chk_outbox2 = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox2_id).first()
+    assert chk_order2.status == OrderStatus.ACKNOWLEDGED.value
+    assert chk_outbox2.status == "DELIVERED"
+
+    check_db.close()
+
+
+def test_stale_caller_objects_cannot_flush_old_statuses(session, sandbox_setup):
+    """
+    Transaction-Ownership Test 7:
+    Proves that after a fresh retry session commits, caller-owned ORM objects are expired
+    so a later flush() on the caller session cannot restore the old status.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_stale_flush",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_stale",
+        trigger_event_key="tk_stale",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=986,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.PENDING_SUBMISSION.value,
+    )
+    session.add(order)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="PLACE",
+        priority=10,
+        status="CLAIMED",
+        idempotency_key="stale_flush_test",
+        canonical_payload_hash="hash_stale",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        attempts=1,
+    )
+    session.add(outbox)
+    session.commit()
+
+    order_id = order.id
+    outbox_id = outbox.id
+
+    worker = SandboxOutboxWorker()
+
+    # Simulate attempt 0 lock error so it retries with fresh session
+    orig_do_transition = worker._do_reconciliation_transition
+    transition_calls = [0]
+    def lock_attempt0(db, outbox_arg, order_arg, error_code, error_msg):
+        transition_calls[0] += 1
+        if transition_calls[0] == 1:
+            raise OperationalError(statement="UPDATE", params={}, orig=Exception("database is locked"))
+        return orig_do_transition(db, outbox_arg, order_arg, error_code, error_msg)
+
+    worker._do_reconciliation_transition = lock_attempt0
+
+    worker._transition_to_reconciliation(session, outbox, order, "STALE_TEST", "Testing stale flush")
+
+    # Now caller session tries to flush
+    session.flush()
+    session.commit()
+
+    # Verify that in database, status is still RECONCILIATION_REQUIRED
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    check_db = IndependentSessionFactory()
+    chk_order = check_db.query(Order).filter(Order.id == order_id).first()
+    chk_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    assert chk_order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox.status == "RECONCILIATION_REQUIRED"
+    check_db.close()
+
+
+def test_cancel_action_satisfies_transaction_and_retry_rules(session, sandbox_setup):
+    """
+    Transaction-Ownership Test 11:
+    Proves that CANCEL actions:
+    - Hold no open DB transaction during adapter.cancel_order.
+    - Successfully retry via fresh sessions on SQLite lock contention.
+    - Commit RECONCILIATION_REQUIRED durably.
+    - Survive outer commit and rollback.
+    - Preserve cash reservation without premature release.
+    """
+    user = sandbox_setup["user"]
+    runtime = sandbox_setup["runtime"]
+    acct = sandbox_setup["account"]
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # 1. Setup reserved cash
+    acct.reserved_cash_units = 5000000
+    session.flush()
+
+    intent = OrderIntent(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        action_mapping_id="m_cancel_rule",
+        requested_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        resolved_instrument_id="synthetic_candidate_option_pe_23000_15m",
+        intent_type="ENTRY",
+        reduce_only=False,
+        side="BUY",
+        quantity_units=50,
+        order_type="LIMIT",
+        limit_price_units=100000,
+        time_in_force="DAY",
+        source_candle_timestamp=now,
+        source_evaluation_fingerprint="fp_c_rule",
+        trigger_event_key="tk_c_rule",
+    )
+    session.add(intent)
+    session.flush()
+
+    order = Order(
+        owner_id=user.id,
+        runtime_id=runtime.id,
+        intent_id=intent.id,
+        account_id=acct.id,
+        order_sequence_number=987,
+        instrument_id="synthetic_candidate_option_pe_23000_15m",
+        side=OrderSide.BUY.value,
+        order_type="LIMIT",
+        quantity_units=50,
+        limit_price_units=100000,
+        filled_quantity_units=0,
+        status=OrderStatus.CANCEL_PENDING.value,
+    )
+    session.add(order)
+    session.flush()
+
+    # External link exists (meaning order was previously placed)
+    ext_link = ExternalOrderLink(
+        owner_id=user.id,
+        order_id=order.id,
+        provider_name="UPSTOX",
+        provider_order_id="EXT_CANCEL_RULE_1",
+        submitted_at=now,
+    )
+    session.add(ext_link)
+    session.flush()
+
+    outbox = SubmissionOutbox(
+        owner_id=user.id,
+        order_id=order.id,
+        action_type="CANCEL",
+        priority=0,
+        status="PENDING",
+        idempotency_key="cancel_rules_test",
+        canonical_payload_hash="hash_c_rule",
+        payload_json={"order_id": order.id},
+        next_attempt_at=now,
+        attempts=0,
+    )
+    session.add(outbox)
+    session.commit()
+
+    order_id = order.id
+    outbox_id = outbox.id
+
+    cancel_transaction_states = []
+
+    class CancelRuleAdapter(UpstoxSandboxAdapter):
+        def cancel_order(self, provider_order_id, token):
+            cancel_transaction_states.append({
+                "in_transaction": session.in_transaction(),
+            })
+            # Ambiguous 429 response
+            raise UpstoxRetryable429(retry_after=5, error_code="RATE_LIMIT", message="Rate limit during cancel")
+
+    worker = SandboxOutboxWorker(adapter=CancelRuleAdapter())
+
+    # Force attempt 0 to encounter lock contention
+    orig_do_transition = worker._do_reconciliation_transition
+    transition_calls = [0]
+    def lock_cancel_attempt0(db, outbox_arg, order_arg, error_code, error_msg):
+        transition_calls[0] += 1
+        if transition_calls[0] == 1:
+            raise OperationalError(statement="UPDATE", params={}, orig=Exception("database is locked"))
+        return orig_do_transition(db, outbox_arg, order_arg, error_code, error_msg)
+
+    worker._do_reconciliation_transition = lock_cancel_attempt0
+
+    worker.process_batch(session)
+
+    # Verify no transaction was held during adapter call
+    assert len(cancel_transaction_states) == 1
+    assert cancel_transaction_states[0]["in_transaction"] is False
+
+    # Verify attempt 0 hit lock and retry succeeded
+    assert transition_calls[0] >= 2
+
+    # Verify outcome in DB
+    IndependentSessionFactory = sessionmaker(bind=session.get_bind(), autocommit=False, autoflush=False)
+    check_db = IndependentSessionFactory()
+
+    chk_order = check_db.query(Order).filter(Order.id == order_id).first()
+    chk_outbox = check_db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox_id).first()
+    chk_acct = check_db.query(PaperAccount).filter(PaperAccount.id == acct.id).first()
+
+    assert chk_order.status == OrderStatus.RECONCILIATION_REQUIRED.value
+    assert chk_outbox.status == "RECONCILIATION_REQUIRED"
+    # Cancel reconciliation preserves cash reservation (never release until confirmed)
+    assert chk_acct.reserved_cash_units == 5000000
+
+    # Exactly one OPEN reconciliation record
+    recs = check_db.query(ReconciliationRecord).filter(ReconciliationRecord.outbox_id == outbox_id).all()
+    assert len(recs) == 1
+    assert recs[0].status == "OPEN"
+
+    check_db.close()

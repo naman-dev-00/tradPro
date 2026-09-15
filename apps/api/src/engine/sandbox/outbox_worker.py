@@ -1,3 +1,4 @@
+import copy
 import datetime
 import logging
 import os
@@ -425,7 +426,7 @@ class SandboxOutboxWorker:
             outbox.last_error_code = "UNKNOWN_ACTION"
             outbox.last_error_message = f"Unsupported action type '{outbox.action_type}'"
 
-        db.flush()
+        db.commit()
 
     def _handle_place_action(
         self,
@@ -443,8 +444,15 @@ class SandboxOutboxWorker:
             outbox.last_error_message = f"Order status is {curr_status.value}, expected PENDING_SUBMISSION"
             return
 
+        payload = copy.deepcopy(outbox.payload_json)
+        # Release caller transaction so zero locks/transactions are held during external HTTP call
         try:
-            res = self.adapter.place_order(outbox.payload_json, token)
+            db.rollback()
+        except Exception:
+            pass
+
+        try:
+            res = self.adapter.place_order(payload, token)
             # Success!
             provider_order_id = res.provider_order_id
 
@@ -558,9 +566,16 @@ class SandboxOutboxWorker:
             outbox.claim_lease_until = None
             return
 
+        provider_order_id = ext_link.provider_order_id
+        # Release caller transaction so zero locks/transactions are held during external HTTP call
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
         # Order has external link: transmit DELETE /v3/order/cancel
         try:
-            res = self.adapter.cancel_order(ext_link.provider_order_id, token)
+            res = self.adapter.cancel_order(provider_order_id, token)
             # Mandatory Correction 8: Confirm cancellation response explicitly confirms cancellation
             if res.cancelled:
                 curr_status = OrderStatus(order.status)
@@ -611,47 +626,133 @@ class SandboxOutboxWorker:
         Transition outbox + order to RECONCILIATION_REQUIRED with bounded SQLite lock retry.
         On retry exhaustion, fail loudly but preserve the transmission_started_at marker
         so lease recovery will eventually force reconciliation.
+
+        Session Ownership Architecture:
+        - Design: ATTEMPT 0 USES CALLER SESSION; RETRIES USE FRESH SESSIONS.
+        - Attempt 0 uses the caller's session directly so that nested transaction savepoints,
+          caller session tracking, and caller test mock patches operate directly.
+        - If transient SQLite lock contention occurs on Attempt 0, the caller's session
+          undergoes `db.rollback()` to clear the failed attempt-0 nested transaction.
+          This rollback is safe because previous outbox items are committed individually,
+          the durable marker was committed in a prior transaction, and no unrelated pending
+          writes exist in the caller session.
+        - The caller session is NEVER closed by this helper (session lifecycle remains with caller).
+        - Subsequent retries (Attempts 1..N) use fresh sessions derived from the engine to avoid
+          reusing a tainted transaction state.
+        - When a fresh retry session commits, `db.expire(outbox)` and `db.expire(order)` are
+          invoked on the caller session so stale dirty ORM state cannot overwrite or flush
+          old statuses.
+        - On retry exhaustion, the last SQLite OperationalError is re-raised; the previously
+          committed `transmission_started_at` marker remains intact in the DB.
         """
-        last_exc = None
-        for attempt in range(SQLITE_LOCK_MAX_RETRIES):
+        outbox_id = outbox.id
+        order_id = order.id
+        bound_engine = db.get_bind()
+        dialect_name = bound_engine.dialect.name if bound_engine is not None else ""
+        is_sqlite = "sqlite" in dialect_name
+
+        last_exc: Optional[OperationalError] = None
+
+        # Attempt 0: Use caller's session directly
+        try:
+            self._do_reconciliation_transition(db, outbox, order, error_code, error_message)
+            return  # Success
+        except OperationalError as oe:
+            if not (is_sqlite and _is_sqlite_locked_error(oe)):
+                raise  # Not a transient SQLite lock error — propagate immediately
+            last_exc = oe
+            logger.warning(
+                "SQLite lock contention on reconciliation transition: outbox_id=%s attempt=1/%d error_category=SQLITE_LOCKED",
+                outbox_id,
+                SQLITE_LOCK_MAX_RETRIES,
+            )
             try:
-                self._do_reconciliation_transition(db, outbox, order, error_code, error_message)
-                return  # Success
-            except OperationalError as oe:
-                if not _is_sqlite_locked_error(oe):
-                    raise  # Not a transient lock error — propagate immediately
-                last_exc = oe
-                logger.warning(
-                    "SQLite lock contention on reconciliation transition for outbox %s (attempt %d/%d): %s",
-                    outbox.id, attempt + 1, SQLITE_LOCK_MAX_RETRIES, str(oe),
+                db.rollback()
+            except Exception:
+                pass
+
+        # Subsequent attempts: Use fresh sessions from the engine
+        from sqlalchemy.orm import sessionmaker as _sessionmaker
+        FreshSessionFactory = _sessionmaker(
+            bind=bound_engine, autocommit=False, autoflush=False
+        )
+
+        for attempt in range(1, SQLITE_LOCK_MAX_RETRIES):
+            backoff_ms = SQLITE_LOCK_BACKOFF_MS[
+                min(attempt - 1, len(SQLITE_LOCK_BACKOFF_MS) - 1)
+            ]
+            time.sleep(backoff_ms / 1000.0)
+
+            fresh_db = FreshSessionFactory()
+            try:
+                fresh_order = (
+                    fresh_db.query(Order).filter(Order.id == order_id).first()
                 )
-                # Roll back the failed transaction
+                fresh_outbox = (
+                    fresh_db.query(SubmissionOutbox)
+                    .filter(SubmissionOutbox.id == outbox_id)
+                    .first()
+                )
+                if not fresh_order or not fresh_outbox:
+                    raise RuntimeError(
+                        f"outbox/order records missing during reconciliation retry (outbox_id={outbox_id})"
+                    )
+
+                self._do_reconciliation_transition(
+                    fresh_db, fresh_outbox, fresh_order, error_code, error_message
+                )
+                fresh_db.commit()
+
+                # Refresh/expire caller's ORM objects so they see the committed state
                 try:
-                    db.rollback()
+                    db.expire(outbox)
+                    db.expire(order)
                 except Exception:
                     pass
-                # Backoff without holding a DB transaction open
-                backoff_ms = SQLITE_LOCK_BACKOFF_MS[min(attempt, len(SQLITE_LOCK_BACKOFF_MS) - 1)]
-                time.sleep(backoff_ms / 1000.0)
-                # Re-query on fresh transaction state
-                try:
-                    order = db.query(Order).filter(Order.id == order.id).first()
-                    outbox = db.query(SubmissionOutbox).filter(SubmissionOutbox.id == outbox.id).first()
-                    if not order or not outbox:
-                        raise RuntimeError(f"Lost outbox/order records during retry for outbox {outbox.id if outbox else 'unknown'}")
-                except Exception:
+                return
+
+            except OperationalError as oe:
+                if not (is_sqlite and _is_sqlite_locked_error(oe)):
+                    try:
+                        fresh_db.rollback()
+                    except Exception:
+                        pass
                     raise
+
+                last_exc = oe
+                logger.warning(
+                    "SQLite lock contention on reconciliation transition: outbox_id=%s attempt=%d/%d error_category=SQLITE_LOCKED",
+                    outbox_id,
+                    attempt + 1,
+                    SQLITE_LOCK_MAX_RETRIES,
+                )
+                try:
+                    fresh_db.rollback()
+                except Exception:
+                    pass
+
+            except Exception:
+                try:
+                    fresh_db.rollback()
+                except Exception:
+                    pass
+                raise
+
+            finally:
+                try:
+                    fresh_db.close()
+                except Exception:
+                    pass
 
         # Retry exhaustion: fail loudly, preserve marker
         logger.error(
-            "CRITICAL: SQLite lock retry exhausted for outbox %s after %d attempts. "
-            "transmission_started_at marker remains at %s. "
+            "CRITICAL: SQLite lock retry exhausted: outbox_id=%s attempts=%d. "
+            "transmission_started_at marker remains committed. "
             "Lease recovery will force reconciliation on next cycle.",
-            outbox.id if outbox else "unknown",
+            outbox_id,
             SQLITE_LOCK_MAX_RETRIES,
-            outbox.transmission_started_at if outbox else "unknown",
         )
-        if last_exc:
+        if last_exc is not None:
             raise last_exc
 
     def _do_reconciliation_transition(
