@@ -264,6 +264,7 @@ def test_forbidden_short_reversal_rollback_leaves_zero_mutations(db_session, tes
         reserved_cash_units=50_000,
     )
     db_session.add(acct)
+    db_session.flush()
 
     strat = Strategy(
         id="strat-short-test",
@@ -273,6 +274,7 @@ def test_forbidden_short_reversal_rollback_leaves_zero_mutations(db_session, tes
         payload={"name": "S1"},
     )
     db_session.add(strat)
+    db_session.flush()
 
     pol = StrategyActionPolicy(
         id="pol-short-test",
@@ -283,6 +285,7 @@ def test_forbidden_short_reversal_rollback_leaves_zero_mutations(db_session, tes
         payload={"entry_mapping": {}},
     )
     db_session.add(pol)
+    db_session.flush()
 
     risk = RiskPolicy(
         id="risk-short-test",
@@ -292,6 +295,7 @@ def test_forbidden_short_reversal_rollback_leaves_zero_mutations(db_session, tes
         payload={"max_open_orders": 10},
     )
     db_session.add(risk)
+    db_session.flush()
 
     inst_id = "synthetic_candidate_option_ce_23500_15m"
     inst_spec = PACKAGED_INSTRUMENT_SPECS[inst_id]
@@ -310,6 +314,7 @@ def test_forbidden_short_reversal_rollback_leaves_zero_mutations(db_session, tes
         trading_mode="PAPER",
     )
     db_session.add(rt)
+    db_session.flush()
 
     intent = OrderIntent(
         id="int-short-test",
@@ -329,6 +334,7 @@ def test_forbidden_short_reversal_rollback_leaves_zero_mutations(db_session, tes
         trigger_event_key="tk1",
     )
     db_session.add(intent)
+    db_session.flush()
 
     # Long 50 units @ 100.00 (cost basis = 500,000)
     pos = PaperPosition(

@@ -1,8 +1,9 @@
 import logging
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
 from src.config import settings
+from src.database_safety import require_disposable_target
 
 logger = logging.getLogger("tradepro.database")
 logging.basicConfig(level=logging.INFO)
@@ -41,14 +42,21 @@ def mask_db_url(url_str: str) -> str:
 
 def get_db_url() -> str:
     if settings.DATABASE_URL:
+        if settings.APP_ENV == "test":
+            require_disposable_target(settings.DATABASE_URL)
         return settings.DATABASE_URL
 
-    if settings.APP_ENV in ["local", "test"]:
+    if settings.APP_ENV == "test":
+        raise RuntimeError("Test mode requires an explicit disposable DATABASE_URL")
+
+    if settings.APP_ENV == "local":
         return settings.FALLBACK_DB_URL
 
     raise RuntimeError("DATABASE_URL environment variable is required in staging and production environments.")
 
 def create_db_engine(db_url: str):
+    if settings.APP_ENV == "test":
+        require_disposable_target(db_url)
     masked_url = mask_db_url(db_url)
     connect_args = {}
 
@@ -94,22 +102,42 @@ def create_active_engine():
 engine = create_active_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def verify_database_connection():
-    db_url = get_db_url()
-    masked_url = mask_db_url(db_url)
+# Deliberately pinned until a separate development 0006 migration is authorized.
+LOCAL_SCHEMA_REVISION = "0005_upstox_sandbox"
 
-    # If DATABASE_URL is explicitly set (e.g. postgresql://...), test connection
-    if settings.DATABASE_URL:
-        try:
-            logger.info(f"Verifying connection to configured database: {masked_url}")
-            with engine.connect() as conn:
-                pass
-            logger.info("Successfully verified connection to configured database.")
-        except Exception as e:
-            logger.error(f"Failed to connect to configured database ({masked_url}): {e}")
-            raise RuntimeError(f"Failed to connect to configured database ({masked_url}).") from e
-    else:
-        logger.info(f"Using local/test SQLite database ({masked_url}). Connection verification skipped.")
+
+def expected_schema_revision():
+    if settings.APP_ENV == "local":
+        return LOCAL_SCHEMA_REVISION
+    from pathlib import Path
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+def verify_database_connection():
+    """Read-only readiness check; never create a missing SQLite file or schema."""
+    from pathlib import Path
+    expected = expected_schema_revision()
+    instruction = f"Database schema is unavailable or outdated. Run Alembic upgrade {expected} against the intended database."
+    url = engine.url
+    if url.get_backend_name() == "sqlite" and url.database not in (None, "", ":memory:"):
+        if not Path(url.database).is_file():
+            raise RuntimeError(instruction)
+    try:
+        with engine.connect().execution_options(read_only=True) as conn:
+            conn.execute(text("SELECT 1"))
+            if not inspect(conn).has_table("alembic_version"):
+                raise RuntimeError(instruction)
+            versions = conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
+            if versions != [expected]:
+                raise RuntimeError(instruction)
+    except Exception:
+        # Never expose a URL, credentials, SQL error text or exception chain.
+        raise RuntimeError(instruction) from None
+
 
 def get_db():
     db = SessionLocal()

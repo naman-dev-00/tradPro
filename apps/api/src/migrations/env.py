@@ -16,9 +16,15 @@ except AttributeError:
 def configure_database_url(cfg):
     configured_url = cfg.get_main_option("sqlalchemy.url")
     if configured_url:
+        if settings.APP_ENV == "test":
+            from src.database_safety import require_disposable_target
+            require_disposable_target(configured_url)
         return configured_url
 
     runtime_url = settings.DATABASE_URL or get_db_url()
+    if settings.APP_ENV == "test":
+        from src.database_safety import require_disposable_target
+        require_disposable_target(runtime_url)
     cfg.set_main_option(
         "sqlalchemy.url",
         runtime_url.replace("%", "%%")
@@ -64,6 +70,9 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
         context.configure(
             connection=connection, target_metadata=target_metadata
         )

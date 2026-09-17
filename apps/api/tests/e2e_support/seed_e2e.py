@@ -8,8 +8,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Import models & auth hashing
-from src.models import Base, User, Strategy
-from src.auth.security import hash_password
 
 SENTINEL_FILENAME = ".tradepro-e2e-disposable"
 
@@ -84,6 +82,9 @@ def seed_e2e_database() -> Dict[str, Any]:
         manifest_path = str(pathlib.Path(e2e_temp_dir) / "e2e_manifest.json")
 
     validate_disposable_e2e_environment(app_env, database_url, e2e_temp_dir)
+
+    from src.models import User, Strategy
+    from src.auth.security import hash_password
 
     engine = create_engine(database_url)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

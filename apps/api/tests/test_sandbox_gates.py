@@ -11,6 +11,19 @@ from src.models import (
 from src.services.sandbox_gate_service import SandboxGateService
 
 
+def seed_runtime_parents(session, owner_id):
+    from src.models import Strategy, PaperAccount, RiskPolicy, StrategyActionPolicy
+    session.add_all([
+        Strategy(id="mock_strat_id", owner_id=owner_id, name="Gate test", timeframe="15m", payload={}),
+        PaperAccount(id="mock_acct_id", owner_id=owner_id, name="Gate test", currency="INR"),
+        RiskPolicy(id="mock_risk_id", owner_id=owner_id, name="Gate test", version=1, payload={}),
+    ])
+    session.flush()
+    session.add(StrategyActionPolicy(id="mock_action_id", owner_id=owner_id,
+                                    strategy_id="mock_strat_id", name="Gate test", version=1, payload={}))
+    session.flush()
+
+
 def test_startup_guard_fails_in_production_when_network_enabled(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("UPSTOX_SANDBOX_NETWORK_ENABLED", "true")
@@ -44,6 +57,7 @@ def test_runtime_readiness_all_gates_pass(session, test_user, monkeypatch):
     now = datetime.datetime.now(datetime.timezone.utc)
 
     # 1. Create runtime in BROKER_SANDBOX
+    seed_runtime_parents(session, test_user.id)
     runtime = StrategyRuntime(
         owner_id=test_user.id,
         strategy_id="mock_strat_id",
@@ -105,6 +119,7 @@ def test_runtime_readiness_kill_switch_blocks_submission_permits_cancel(session,
 
     now = datetime.datetime.now(datetime.timezone.utc)
 
+    seed_runtime_parents(session, test_user.id)
     runtime = StrategyRuntime(
         owner_id=test_user.id,
         strategy_id="mock_strat_id",

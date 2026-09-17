@@ -6,10 +6,8 @@ from src.config import Settings
 from src import database
 
 def test_database_url_configured_success():
-    with patch("src.config.settings.DATABASE_URL", "sqlite:///:memory:"), \
-         patch("src.config.settings.APP_ENV", "local"):
-        # verify_database_connection should succeed
-        database.verify_database_connection()
+    database.verify_database_connection()
+
 
 def test_database_url_configured_failure_raises_runtime_error():
     fake_pg_url = "postgresql://user:secret_pass@localhost:5432/fake_db"
@@ -21,7 +19,7 @@ def test_database_url_configured_failure_raises_runtime_error():
         with pytest.raises(RuntimeError) as exc_info:
             database.verify_database_connection()
 
-        assert "Failed to connect to configured database" in str(exc_info.value)
+        assert "Run Alembic upgrade" in str(exc_info.value)
         # Verify secret_pass is masked in error message
         assert "secret_pass" not in str(exc_info.value)
 
@@ -54,3 +52,21 @@ def test_isolated_temp_sqlite_database(tmp_path):
             pass
         test_engine.dispose()
         assert temp_db_file.exists()
+
+
+def test_application_startup_and_fallback_sessions_are_isolated():
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    from src import main
+
+    development = Path(__file__).resolve().parents[1] / "tradepro.db"
+    if database.engine.dialect.name == "sqlite":
+        assert Path(database.engine.url.database).resolve() != development
+    with database.SessionLocal() as session:
+        assert session.get_bind() is database.engine
+    with TestClient(main.app):
+        with database.engine.connect() as connection:
+            if connection.dialect.name == "sqlite":
+                assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
+            else:
+                assert connection.exec_driver_sql("SELECT 1").scalar() == 1

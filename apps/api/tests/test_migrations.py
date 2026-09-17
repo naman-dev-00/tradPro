@@ -130,7 +130,7 @@ def test_alembic_revision_identifiers_and_graph_invariants():
 
     # 1. Alembic has exactly one head revision
     assert len(heads) == 1
-    assert heads[0] == "0005_upstox_sandbox"
+    assert heads[0] == "0006_strategy_orchestrator"
 
     # 2. Every revision identifier is non-empty, <= 32 chars, and down_revision resolves
     for script in script_directory.walk_revisions():
@@ -172,6 +172,6 @@ def test_alembic_migration_postgres_compatibility():
     with engine.connect() as conn:
         ctx = MigrationContext.configure(conn)
         current_rev = ctx.get_current_revision()
-        assert current_rev == "0005_upstox_sandbox"
+        assert current_rev == "0006_strategy_orchestrator"
 
     engine.dispose()
