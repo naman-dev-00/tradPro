@@ -1,6 +1,6 @@
 import json
 import logging
-from src.database import SessionLocal, Base, engine
+from src.database import SessionLocal, verify_database_connection
 from src.models import Strategy
 
 logging.basicConfig(level=logging.INFO)
@@ -74,8 +74,8 @@ EXAMPLE_STRATEGY = {
 }
 
 def seed_db():
-    # Make sure tables exist
-    Base.metadata.create_all(bind=engine)
+    # Schema changes are exclusively managed by Alembic.
+    verify_database_connection()
 
     db = SessionLocal()
     try:

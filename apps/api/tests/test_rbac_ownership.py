@@ -261,6 +261,7 @@ def test_bounded_legacy_transfer(session):
             is_active=False
         )
         session.add(legacy_user)
+        session.flush()
 
         # Insert legacy-owned strategy
         legacy_strat = Strategy(

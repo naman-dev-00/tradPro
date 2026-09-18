@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, ForeignKey, ForeignKeyConstraint, text, BigInteger, Integer
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, ForeignKey, ForeignKeyConstraint, text, BigInteger, Integer, Text, Index, event, inspect
 from src.database import Base, UTCDateTime
 
 LEGACY_PRINCIPAL_ID = "00000000-0000-0000-0000-000000000000"
@@ -254,6 +254,7 @@ class StrategyRuntime(Base):
         CheckConstraint("version > 0", name="ck_strategy_runtimes_version_pos"),
         CheckConstraint("consecutive_errors >= 0", name="ck_strategy_runtimes_errors_nonneg"),
         UniqueConstraint("id", "owner_id", name="uq_strategy_runtimes_id_owner"),
+        UniqueConstraint("owner_id", "id", name="uq_strategy_runtimes_owner_resource"),
         ForeignKeyConstraint(["account_id", "owner_id"], ["paper_accounts.id", "paper_accounts.owner_id"], name="fk_strategy_runtimes_account_owner"),
         ForeignKeyConstraint(["strategy_id", "owner_id"], ["strategies.id", "strategies.owner_id"], name="fk_strategy_runtimes_strategy_owner"),
         ForeignKeyConstraint(["action_policy_id", "owner_id"], ["strategy_action_policies.id", "strategy_action_policies.owner_id"], name="fk_strategy_runtimes_action_policy_owner"),
@@ -642,3 +643,268 @@ class WorkerHeartbeat(Base):
     __table_args__ = (
         CheckConstraint("status IN ('HEALTHY', 'STOPPED', 'ERROR')", name="ck_worker_heartbeats_status"),
     )
+
+
+from src.engine.orchestration.storage import ExactInteger
+
+
+class RuntimeOrchestrationConfig(Base):
+    __tablename__ = "runtime_orchestration_configs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), nullable=False)
+    runtime_id = Column(String(36), nullable=False)
+    source_type = Column(String(30), nullable=False)
+    source_namespace = Column(String(100), nullable=False)
+    execution_policy = Column(String(30), nullable=False)
+    snapshot_fingerprint = Column(String(64), nullable=False)
+    snapshot_json = Column(Text, nullable=False)
+    consent_at = Column(UTCDateTime, nullable=False)
+    consent_policy_version = Column(String(30), nullable=False)
+    consent_fingerprint = Column(String(64), nullable=False)
+    source_policy_version = Column(String(30), nullable=False)
+    alignment_offset_seconds = Column(ExactInteger(), nullable=False)
+    timeframe = Column(String(3), nullable=False)
+    replay_open_at = Column(UTCDateTime, nullable=False)
+    replay_close_at = Column(UTCDateTime, nullable=False)
+    checkpoint_close_at = Column(UTCDateTime, nullable=True)
+    lease_owner = Column(String(100), nullable=True)
+    lease_expires_at = Column(UTCDateTime, nullable=True)
+    fencing_generation = Column(ExactInteger(), nullable=False, server_default=text("1"))
+    retry_count = Column(ExactInteger(), nullable=False, server_default=text("0"))
+    next_attempt_at = Column(UTCDateTime, nullable=True)
+    last_reason_code = Column(String(64), nullable=True)
+    created_at = Column(UTCDateTime, nullable=False)
+    updated_at = Column(UTCDateTime, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("typeof(alignment_offset_seconds) = 'integer' AND typeof(fencing_generation) = 'integer' AND typeof(retry_count) = 'integer'", name="ck_orch_config_storage").ddl_if(dialect="sqlite"),
+        UniqueConstraint("runtime_id", name="uq_orch_config_runtime"),
+        UniqueConstraint("owner_id", "runtime_id", name="uq_orch_config_owner_runtime"),
+        UniqueConstraint("owner_id", "runtime_id", "id", "snapshot_fingerprint", "timeframe", name="uq_orch_config_identity"),
+        UniqueConstraint("owner_id", "runtime_id", "source_namespace", "timeframe", "source_policy_version", "alignment_offset_seconds", name="uq_orch_config_source"),
+        ForeignKeyConstraint(["owner_id", "runtime_id"], ["strategy_runtimes.owner_id", "strategy_runtimes.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_config_runtime"),
+        ForeignKeyConstraint(["owner_id"], ["users.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_config_confirming_user"),
+        CheckConstraint("source_policy_version = 'packaged_alignment_v1' AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_config_alignment"),
+        CheckConstraint("source_type = 'FIXTURE_REPLAY'", name="ck_orch_config_source"),
+        CheckConstraint("execution_policy = 'INTERNAL_MOCK_ONLY'", name="ck_orch_config_execution"),
+        CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_config_timeframe"),
+        CheckConstraint("length(id) BETWEEN 1 AND 36 AND length(owner_id) BETWEEN 1 AND 36 AND length(runtime_id) BETWEEN 1 AND 36", name="ck_orch_config_ids"),
+        CheckConstraint("length(source_namespace) BETWEEN 1 AND 100", name="ck_orch_config_namespace"),
+        CheckConstraint("length(snapshot_fingerprint) = 64", name="ck_orch_config_fingerprint"),
+        CheckConstraint("length(snapshot_json) BETWEEN 2 AND 262144", name="ck_orch_config_snapshot"),
+        CheckConstraint("consent_policy_version = 'fixture_consent_v1' AND length(consent_fingerprint) = 64", name="ck_orch_config_consent"),
+        CheckConstraint("replay_close_at > replay_open_at", name="ck_orch_config_replay"),
+        CheckConstraint("checkpoint_close_at IS NULL OR (checkpoint_close_at > replay_open_at AND checkpoint_close_at <= replay_close_at)", name="ck_orch_config_checkpoint"),
+        CheckConstraint("(lease_owner IS NULL AND lease_expires_at IS NULL) OR (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND length(lease_owner) BETWEEN 1 AND 100)", name="ck_orch_config_lease"),
+        CheckConstraint("fencing_generation BETWEEN 1 AND 9223372036854775807 AND fencing_generation = CAST(fencing_generation AS BIGINT)", name="ck_orch_config_generation"),
+        CheckConstraint("retry_count BETWEEN 0 AND 100 AND retry_count = CAST(retry_count AS INTEGER)", name="ck_orch_config_retries"),
+        CheckConstraint("last_reason_code IS NULL OR length(last_reason_code) BETWEEN 1 AND 64", name="ck_orch_config_reason"),
+        CheckConstraint("updated_at >= created_at AND consent_at <= created_at", name="ck_orch_config_times"),
+        Index("ix_orch_config_retry", "next_attempt_at", "runtime_id"),
+        Index("ix_orch_config_lease", "lease_expires_at"),
+    )
+
+
+class CompletedCandleEvent(Base):
+    __tablename__ = "completed_candle_events"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), nullable=False)
+    runtime_id = Column(String(36), nullable=False)
+    source_type = Column(String(30), nullable=False)
+    source_namespace = Column(String(100), nullable=False)
+    source_event_id = Column(String(100), nullable=False)
+    dataset_id = Column(String(100), nullable=False)
+    dataset_checksum = Column(String(64), nullable=False)
+    instrument_id = Column(String(100), nullable=False)
+    timeframe = Column(String(3), nullable=False)
+    series_role = Column(String(10), nullable=False)
+    source_policy_version = Column(String(30), nullable=False)
+    alignment_offset_seconds = Column(ExactInteger(), nullable=False)
+    open_at = Column(UTCDateTime, nullable=False)
+    close_at = Column(UTCDateTime, nullable=False)
+    received_at = Column(UTCDateTime, nullable=False)
+    price_scale = Column(ExactInteger(), nullable=False)
+    volume_scale = Column(ExactInteger(), nullable=False)
+    open_units = Column(ExactInteger(), nullable=False)
+    high_units = Column(ExactInteger(), nullable=False)
+    low_units = Column(ExactInteger(), nullable=False)
+    close_units = Column(ExactInteger(), nullable=False)
+    volume_units = Column(ExactInteger(), nullable=False)
+    is_closed = Column(Boolean, nullable=False)
+    revision = Column(ExactInteger(), nullable=False)
+    content_fingerprint = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("typeof(alignment_offset_seconds) = 'integer' AND typeof(price_scale) = 'integer' AND typeof(volume_scale) = 'integer' AND typeof(open_units) = 'integer' AND typeof(high_units) = 'integer' AND typeof(low_units) = 'integer' AND typeof(close_units) = 'integer' AND typeof(volume_units) = 'integer' AND typeof(revision) = 'integer'", name="ck_orch_candle_storage").ddl_if(dialect="sqlite"),
+        UniqueConstraint("owner_id", "runtime_id", "id", name="uq_orch_candle_resource"),
+        UniqueConstraint("owner_id", "runtime_id", "content_fingerprint", name="uq_orch_candle_content"),
+        UniqueConstraint("owner_id", "runtime_id", "source_namespace", "series_role", "dataset_id", "source_event_id", name="uq_orch_candle_event"),
+        UniqueConstraint("owner_id", "runtime_id", "series_role", "instrument_id", "timeframe", "close_at", name="uq_orch_candle_interval"),
+        ForeignKeyConstraint(["owner_id", "runtime_id", "source_namespace", "timeframe", "source_policy_version", "alignment_offset_seconds"], ["runtime_orchestration_configs.owner_id", "runtime_orchestration_configs.runtime_id", "runtime_orchestration_configs.source_namespace", "runtime_orchestration_configs.timeframe", "runtime_orchestration_configs.source_policy_version", "runtime_orchestration_configs.alignment_offset_seconds"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_candle_config"),
+        CheckConstraint("source_type = 'FIXTURE_REPLAY'", name="ck_orch_candle_source"),
+        CheckConstraint("series_role IN ('REFERENCE', 'SUBJECT')", name="ck_orch_candle_role"),
+        CheckConstraint("source_policy_version = 'packaged_alignment_v1' AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_candle_alignment"),
+        CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_candle_timeframe"),
+        CheckConstraint("revision = 1 AND is_closed IS TRUE", name="ck_orch_candle_final"),
+        CheckConstraint("length(id) BETWEEN 1 AND 36 AND length(owner_id) BETWEEN 1 AND 36 AND length(runtime_id) BETWEEN 1 AND 36", name="ck_orch_candle_ids"),
+        CheckConstraint("length(source_namespace) BETWEEN 1 AND 100 AND length(source_event_id) BETWEEN 1 AND 100 AND length(dataset_id) BETWEEN 1 AND 100 AND length(instrument_id) BETWEEN 1 AND 100", name="ck_orch_candle_identifiers"),
+        CheckConstraint("length(dataset_checksum) = 64 AND length(content_fingerprint) = 64", name="ck_orch_candle_hashes"),
+        CheckConstraint("close_at > open_at AND received_at >= close_at", name="ck_orch_candle_times"),
+        CheckConstraint("price_scale BETWEEN 0 AND 8 AND volume_scale BETWEEN 0 AND 8 AND price_scale = CAST(price_scale AS INTEGER) AND volume_scale = CAST(volume_scale AS INTEGER)", name="ck_orch_candle_scales"),
+        CheckConstraint("open_units BETWEEN 1 AND 9000000000000000 AND high_units BETWEEN 1 AND 9000000000000000 AND low_units BETWEEN 1 AND 9000000000000000 AND close_units BETWEEN 1 AND 9000000000000000 AND volume_units BETWEEN 0 AND 9000000000000000 AND open_units = CAST(open_units AS BIGINT) AND high_units = CAST(high_units AS BIGINT) AND low_units = CAST(low_units AS BIGINT) AND close_units = CAST(close_units AS BIGINT) AND volume_units = CAST(volume_units AS BIGINT)", name="ck_orch_candle_units"),
+        CheckConstraint("high_units >= open_units AND high_units >= close_units AND high_units >= low_units AND low_units <= open_units AND low_units <= close_units", name="ck_orch_candle_geometry"),
+        Index("ix_orch_candle_series", "owner_id", "runtime_id", "series_role", "close_at"),
+    )
+
+
+class RuntimeEvaluation(Base):
+    __tablename__ = "runtime_evaluations"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), nullable=False)
+    runtime_id = Column(String(36), nullable=False)
+    config_id = Column(String(36), nullable=False)
+    snapshot_fingerprint = Column(String(64), nullable=False)
+    evaluation_fingerprint = Column(String(64), nullable=False)
+    timeframe = Column(String(3), nullable=False)
+    close_at = Column(UTCDateTime, nullable=False)
+    reference_candle_id = Column(String(36), nullable=False)
+    subject_candle_id = Column(String(36), nullable=True)
+    required_candles_json = Column(Text, nullable=False)
+    evaluation_status = Column(String(20), nullable=False)
+    action_outcome = Column(String(30), nullable=False)
+    risk_outcome = Column(String(20), nullable=False)
+    no_order_reason = Column(String(64), nullable=True)
+    audit_json = Column(Text, nullable=False)
+    risk_summary_json = Column(Text, nullable=False)
+    finalized_at = Column(UTCDateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "runtime_id", "id", name="uq_orch_eval_resource"),
+        UniqueConstraint("evaluation_fingerprint", name="uq_orch_eval_fingerprint"),
+        UniqueConstraint("owner_id", "runtime_id", "timeframe", "close_at", name="uq_orch_eval_interval"),
+        ForeignKeyConstraint(["owner_id", "runtime_id", "config_id", "snapshot_fingerprint", "timeframe"], ["runtime_orchestration_configs.owner_id", "runtime_orchestration_configs.runtime_id", "runtime_orchestration_configs.id", "runtime_orchestration_configs.snapshot_fingerprint", "runtime_orchestration_configs.timeframe"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_eval_config"),
+        ForeignKeyConstraint(["owner_id", "runtime_id", "reference_candle_id"], ["completed_candle_events.owner_id", "completed_candle_events.runtime_id", "completed_candle_events.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_eval_reference"),
+        ForeignKeyConstraint(["owner_id", "runtime_id", "subject_candle_id"], ["completed_candle_events.owner_id", "completed_candle_events.runtime_id", "completed_candle_events.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_eval_subject"),
+        CheckConstraint("length(id) BETWEEN 1 AND 36 AND length(owner_id) BETWEEN 1 AND 36 AND length(runtime_id) BETWEEN 1 AND 36 AND length(config_id) BETWEEN 1 AND 36", name="ck_orch_eval_ids"),
+        CheckConstraint("length(snapshot_fingerprint) = 64 AND length(evaluation_fingerprint) = 64", name="ck_orch_eval_hashes"),
+        CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_eval_timeframe"),
+        CheckConstraint("evaluation_status IN ('TRUE', 'FALSE', 'UNAVAILABLE', 'INVALID')", name="ck_orch_eval_status"),
+        CheckConstraint("action_outcome IN ('NO_ACTION', 'REJECTED', 'ACCEPTED_INTERNAL')", name="ck_orch_eval_action"),
+        CheckConstraint("risk_outcome IN ('NOT_RUN', 'REJECTED', 'ACCEPTED')", name="ck_orch_eval_risk"),
+        CheckConstraint("(action_outcome = 'ACCEPTED_INTERNAL' AND risk_outcome = 'ACCEPTED' AND no_order_reason IS NULL AND evaluation_status IN ('TRUE', 'FALSE')) OR (action_outcome != 'ACCEPTED_INTERNAL' AND no_order_reason IS NOT NULL AND length(no_order_reason) BETWEEN 1 AND 64)", name="ck_orch_eval_outcome"),
+        CheckConstraint("length(required_candles_json) BETWEEN 2 AND 2048 AND length(audit_json) BETWEEN 2 AND 65536 AND length(risk_summary_json) BETWEEN 2 AND 65536", name="ck_orch_eval_evidence"),
+        CheckConstraint("finalized_at >= close_at", name="ck_orch_eval_time"),
+        Index("ix_orch_eval_history", "owner_id", "runtime_id", "close_at"),
+    )
+
+
+_ORCHESTRATION_MUTABLE_FIELDS = frozenset({
+    "checkpoint_close_at", "lease_owner", "lease_expires_at", "fencing_generation",
+    "retry_count", "next_attempt_at", "last_reason_code", "updated_at",
+})
+
+
+@event.listens_for(RuntimeOrchestrationConfig, "before_update")
+def _guard_orchestration_config(mapper, connection, target):
+    state = inspect(target)
+    table = RuntimeOrchestrationConfig.__table__
+    previous = connection.execute(table.select().where(table.c.id == state.identity[0])).mappings().one()
+    for attribute in state.attrs:
+        if (attribute.history.has_changes() and attribute.key not in _ORCHESTRATION_MUTABLE_FIELDS
+                and getattr(target, attribute.key) != previous[attribute.key]):
+            raise ValueError(f"Immutable orchestration configuration field: {attribute.key}")
+    # Read persisted values even when SQLAlchemy expired an attribute after
+    # commit; history.deleted alone does not protect unloaded attributes.
+    for field in ("fencing_generation", "checkpoint_close_at"):
+        if previous[field] is not None:
+            if getattr(target, field) is None or getattr(target, field) < previous[field]:
+                raise ValueError(f"Orchestration {field} cannot move backwards")
+
+
+@event.listens_for(CompletedCandleEvent, "before_update")
+@event.listens_for(RuntimeEvaluation, "before_update")
+def _guard_orchestration_audit_update(mapper, connection, target):
+    state = inspect(target)
+    table = target.__table__
+    previous = connection.execute(table.select().where(table.c.id == state.identity[0])).mappings().one()
+    if any(attribute.history.has_changes() and getattr(target, attribute.key) != previous[attribute.key]
+           for attribute in state.attrs):
+        raise ValueError("Orchestration audit records are immutable")
+
+
+@event.listens_for(CompletedCandleEvent, "before_delete")
+@event.listens_for(RuntimeEvaluation, "before_delete")
+@event.listens_for(RuntimeOrchestrationConfig, "before_delete")
+def _guard_orchestration_audit_delete(mapper, connection, target):
+    raise ValueError("Orchestration audit records cannot be deleted through the ORM")
+
+
+@event.listens_for(RuntimeOrchestrationConfig, "before_insert")
+def _validate_orchestration_config(mapper, connection, target):
+    from src.engine.orchestration.models import OrchestrationSnapshot
+    from src.engine.orchestration.fingerprint import canonical_json, orchestration_snapshot_v1
+    from src.engine.orchestration.evidence import config_consent_fingerprint
+    from src.engine.orchestration.source_policy import packaged_alignment
+    from src.engine.manifest import get_dataset_entry
+    if len(target.snapshot_json) > 262144:
+        raise ValueError("Snapshot exceeds limit")
+    snapshot = OrchestrationSnapshot.model_validate_json(target.snapshot_json)
+    for dataset in snapshot.datasets:
+        policy = packaged_alignment(dataset.dataset_id)
+        entry = get_dataset_entry(dataset.dataset_id)
+        if (policy.version, policy.timeframe, policy.offset_seconds) != (
+                snapshot.source_policy_version, snapshot.timeframe, snapshot.alignment_offset_seconds):
+            raise ValueError("Snapshot disagrees with approved source alignment")
+        if (dataset.checksum, dataset.instrument_id, dataset.series_role.value) != (
+                entry.dataset_checksum, entry.instrument_id, entry.category.value):
+            raise ValueError("Snapshot disagrees with approved manifest provenance")
+    for field in ("owner_id", "runtime_id", "timeframe", "source_type", "source_namespace",
+                  "source_policy_version", "alignment_offset_seconds", "execution_policy",
+                  "replay_open_at", "replay_close_at"):
+        if getattr(snapshot, field) != getattr(target, field):
+            raise ValueError("Configuration disagrees with frozen snapshot")
+    if orchestration_snapshot_v1(snapshot) != target.snapshot_fingerprint:
+        raise ValueError("Snapshot fingerprint mismatch")
+    if config_consent_fingerprint(target) != target.consent_fingerprint:
+        raise ValueError("Consent fingerprint mismatch")
+    target.snapshot_json = canonical_json(snapshot.model_dump(mode="python"))
+
+
+@event.listens_for(CompletedCandleEvent, "before_insert")
+def _validate_orchestration_candle(mapper, connection, target):
+    from src.engine.orchestration.models import CompletedCandle
+    payload = {field: getattr(target, field) for field in CompletedCandle.model_fields if field != "contract_version"}
+    candle = CompletedCandle(**payload)
+    if candle.content_fingerprint != target.content_fingerprint:
+        raise ValueError("Candle fingerprint mismatch")
+
+
+@event.listens_for(RuntimeEvaluation, "before_insert")
+def _validate_orchestration_evidence(mapper, connection, target):
+    import json
+    from pydantic import TypeAdapter
+    from src.engine.orchestration.models import RequiredCandleIdentity
+    from src.engine.orchestration.fingerprint import canonical_json
+    from src.engine.orchestration.evidence import evaluation_evidence
+    if len(target.required_candles_json) > 2048:
+        raise ValueError("Required candle evidence exceeds limit")
+    items = TypeAdapter(list[RequiredCandleIdentity]).validate_python(json.loads(target.required_candles_json))
+    if not 1 <= len(items) <= 2 or len({item.series_role for item in items}) != len(items):
+        raise ValueError("Invalid required candle evidence")
+    target.required_candles_json = canonical_json([item.model_dump(mode="python") for item in items])
+    target.audit_json = evaluation_evidence(target.audit_json)
+    target.risk_summary_json = evaluation_evidence(target.risk_summary_json, risk=True)
+
+
+@event.listens_for(RuntimeOrchestrationConfig, "before_insert")
+@event.listens_for(RuntimeOrchestrationConfig, "before_update")
+@event.listens_for(RuntimeEvaluation, "before_insert")
+def _validate_orchestration_codes(mapper, connection, target):
+    import re
+    for field in ("lease_owner", "last_reason_code", "no_order_reason"):
+        value = getattr(target, field, None)
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", value):
+            raise ValueError("Invalid internal evidence code")

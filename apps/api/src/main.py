@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
-from src.database import Base, engine, verify_database_connection
+from src.database import verify_database_connection
 from src.middleware.observability import ObservabilityMiddleware
 from src.services.sandbox_gate_service import SandboxGateService
 from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper, sandbox
@@ -15,8 +15,6 @@ async def lifespan(app: FastAPI):
     verify_database_connection()
     # Enforce sandbox startup network environment guard
     SandboxGateService.enforce_startup_environment_guard()
-    # Automatically initialize tables in the active database
-    Base.metadata.create_all(bind=engine)
     yield
 
 app = FastAPI(

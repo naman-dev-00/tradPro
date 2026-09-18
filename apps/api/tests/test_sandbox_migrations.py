@@ -4,7 +4,7 @@ from alembic.config import Config
 from alembic import command
 from sqlalchemy import create_engine, text
 
-TEST_DB_URL = "sqlite:///./test_sandbox_migration.db"
+TEST_DB_URL = None
 
 ALL_SANDBOX_TABLES = [
     "provider_connections",
@@ -16,25 +16,16 @@ ALL_SANDBOX_TABLES = [
 ]
 
 @pytest.fixture
-def migration_env():
-    if os.path.exists("./test_sandbox_migration.db"):
-        try:
-            os.remove("./test_sandbox_migration.db")
-        except Exception:
-            pass
-
-    alembic_ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config = Config(alembic_ini_path)
-    config.set_main_option("script_location", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "migrations")))
-    config.set_main_option("sqlalchemy.url", TEST_DB_URL)
-
+def migration_env(tmp_path, monkeypatch):
+    from src.database_safety import require_disposable_target
+    url = "sqlite:///" + (tmp_path / "migration.db").as_posix()
+    require_disposable_target(url)
+    monkeypatch.setitem(globals(), "TEST_DB_URL", url)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    config = Config(os.path.join(root, "alembic.ini"))
+    config.set_main_option("script_location", os.path.join(root, "src", "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
     yield config
-
-    if os.path.exists("./test_sandbox_migration.db"):
-        try:
-            os.remove("./test_sandbox_migration.db")
-        except Exception:
-            pass
 
 
 def test_upgrade_0004_to_0005(migration_env):

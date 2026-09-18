@@ -30,19 +30,13 @@ from src.engine.paper.models import (
 from src.engine.paper.runtime import compute_order_intent_identity
 from src.engine.paper.risk_engine import PureRiskEngine
 
-CONCURRENCY_TEST_DB = "sqlite:///./test_paper_concurrency.db"
-
 @pytest.fixture
-def concurrent_db():
-    if os.path.exists("./test_paper_concurrency.db"):
-        try:
-            os.remove("./test_paper_concurrency.db")
-        except Exception:
-            pass
-
-    # Use database engine with BEGIN IMMEDIATE configured
+def concurrent_db(tmp_path):
     from src.database import create_db_engine
-    engine = create_db_engine(CONCURRENCY_TEST_DB)
+    from src.database_safety import require_disposable_target
+    url = "sqlite:///" + (tmp_path / "concurrency.db").as_posix()
+    require_disposable_target(url)
+    engine = create_db_engine(url)
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -76,11 +70,6 @@ def concurrent_db():
     yield SessionLocal, acct_id
 
     engine.dispose()
-    if os.path.exists("./test_paper_concurrency.db"):
-        try:
-            os.remove("./test_paper_concurrency.db")
-        except Exception:
-            pass
 
 def test_sqlite_begin_immediate_prevents_concurrent_overspending(concurrent_db):
     """
