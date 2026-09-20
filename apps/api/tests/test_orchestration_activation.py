@@ -2053,7 +2053,17 @@ def test_real_concurrent_lifecycle_races_postgresql():
             timeframe="15m",
             version=1,
         )
-        s.add_all([u, acc, strat, act, risk, rt])
+        s.add(u)
+        s.flush()
+        s.add(acc)
+        s.flush()
+        s.add(strat)
+        s.flush()
+        s.add(act)
+        s.flush()
+        s.add(risk)
+        s.flush()
+        s.add(rt)
         s.commit()
 
     barrier = threading.Barrier(2)
@@ -2090,13 +2100,18 @@ def test_real_concurrent_lifecycle_races_postgresql():
         assert row["status"] == "RUNNING"
         assert row["version"] == 2
 
-        # Cleanup test rows
-        s.execute(text("DELETE FROM strategy_runtimes WHERE id = :rid"), {"rid": test_rt_id})
-        s.execute(text("DELETE FROM risk_policies WHERE id = :rpid"), {"rpid": test_risk_id})
-        s.execute(text("DELETE FROM strategy_action_policies WHERE id = :apid"), {"apid": test_act_id})
-        s.execute(text("DELETE FROM strategies WHERE id = :sid"), {"sid": test_strat_id})
-        s.execute(text("DELETE FROM paper_accounts WHERE id = :aid"), {"aid": test_acc_id})
-        s.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": test_user_id})
+        # Cleanup test rows in reverse dependency order
+        s.delete(s.get(StrategyRuntime, test_rt_id))
+        s.flush()
+        s.delete(s.get(RiskPolicy, test_risk_id))
+        s.flush()
+        s.delete(s.get(StrategyActionPolicy, test_act_id))
+        s.flush()
+        s.delete(s.get(Strategy, test_strat_id))
+        s.flush()
+        s.delete(s.get(PaperAccount, test_acc_id))
+        s.flush()
+        s.delete(s.get(User, test_user_id))
         s.commit()
 
     engine.dispose()
