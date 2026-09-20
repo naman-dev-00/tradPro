@@ -3,6 +3,7 @@ import pytest
 from src.models import (
     KillSwitch,
     PaperAccount,
+    ProviderConnection,
     ProviderInstrumentMapping,
     Strategy,
     StrategyRuntime,
@@ -131,9 +132,20 @@ def sandbox_ready_env(session, test_user, monkeypatch):
         last_heartbeat_at=datetime.datetime.now(datetime.timezone.utc),
     )
     session.add(hb)
+
+    # Pre-configured Sandbox Provider Connection
+    conn = ProviderConnection(
+        owner_id=test_user.id,
+        provider_name="UPSTOX",
+        environment="SANDBOX",
+        credential_reference="ENV_UPSTOX_SANDBOX_ACCESS_TOKEN",
+        credential_version="v1",
+        status="CONFIGURED",
+    )
+    session.add(conn)
     session.commit()
 
-    return {"runtime": runtime, "mapping": mapping, "account": acct}
+    return {"runtime": runtime, "mapping": mapping, "account": acct, "connection": conn}
 
 
 def test_readiness_all_clear(client, sandbox_ready_env):

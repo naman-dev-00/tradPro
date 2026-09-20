@@ -1,17 +1,57 @@
+import json
 import uuid
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Any, List
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from src.database import get_db
 from src.models import Strategy, User
 from src.schemas import StrategyBase, StrategyCreate, StrategyResponse
 from src.validation import validate_strategy_rules
 from src.auth.dependencies import get_current_user, require_roles, require_csrf
+from src.auth.rate_limiter import rate_limiter
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
-@router.post("/validate")
-def validate_strategy(payload: dict):
+MAX_STRATEGY_PAYLOAD_BYTES = 65536
+MAX_STRATEGY_DEPTH = 16
+MAX_STRATEGY_NODES = 256
+MAX_STRATEGY_STRING_LEN = 1000
+MAX_STRATEGY_ARRAY_LEN = 512
+
+
+def _check_payload_complexity(data: Any, depth: int = 0, node_count: int = 0) -> int:
+    if depth > MAX_STRATEGY_DEPTH:
+        raise HTTPException(
+            status_code=422,
+            detail="Strategy nesting depth exceeds allowed limit (16).",
+        )
+    node_count += 1
+    if node_count > MAX_STRATEGY_NODES:
+        raise HTTPException(
+            status_code=422,
+            detail="Strategy complexity exceeds allowed node count limit (256).",
+        )
+    if isinstance(data, dict):
+        for val in data.values():
+            node_count = _check_payload_complexity(val, depth + 1, node_count)
+    elif isinstance(data, (list, tuple)):
+        if len(data) > MAX_STRATEGY_ARRAY_LEN:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Strategy collection exceeds allowed array limit ({MAX_STRATEGY_ARRAY_LEN}).",
+            )
+        for item in data:
+            node_count = _check_payload_complexity(item, depth + 1, node_count)
+    elif isinstance(data, str):
+        if len(data) > MAX_STRATEGY_STRING_LEN:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Strategy string exceeds allowed length limit ({MAX_STRATEGY_STRING_LEN}).",
+            )
+    return node_count
+
+
+def _validate_strategy_internal(payload: dict) -> dict:
     errors = []
     try:
         strategy = StrategyBase(**payload)
@@ -30,6 +70,76 @@ def validate_strategy(payload: dict):
         "errors": errors
     }
 
+
+@router.post("/validate")
+async def validate_strategy(
+    request: Request,
+    current_user: User = Depends(require_roles("VIEWER", "EDITOR", "ADMIN")),
+    _csrf: None = Depends(require_csrf),
+):
+    rate_limiter.check_rate_limit(f"strategy_validate:{current_user.id}", max_requests=60, window_seconds=60)
+
+    # 1. Reject an oversized declared Content-Length
+    cl_header = request.headers.get("content-length")
+    if cl_header is not None:
+        try:
+            cl_val = int(cl_header)
+            if cl_val > MAX_STRATEGY_PAYLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Strategy payload exceeds 64 KiB limit.",
+                )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+
+    # 2. Independently bound the actual bytes read
+    body_chunks = []
+    total_bytes = 0
+    async for chunk in request.stream():
+        total_bytes += len(chunk)
+        if total_bytes > MAX_STRATEGY_PAYLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Strategy payload exceeds 64 KiB limit.",
+            )
+        body_chunks.append(chunk)
+
+    body_bytes = b"".join(body_chunks)
+
+    # 3. Parse JSON only after actual-byte check
+    try:
+        payload = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid JSON payload.",
+        )
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Strategy payload must be a JSON object.",
+        )
+
+    # 4. Complexity limits (depth <= 16, nodes <= 256, strings <= 1000, arrays <= 256)
+    _check_payload_complexity(payload)
+
+    # 5. Apply Pydantic validation manually after size/depth/node checks (extra="forbid")
+    try:
+        StrategyBase.model_validate(payload)
+    except Exception as e:
+        if hasattr(e, "errors") and callable(getattr(e, "errors")):
+            for err in e.errors():
+                if err.get("type") == "extra_forbidden":
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Extra field not permitted: {err.get('loc')}",
+                    )
+
+    # 6. Pure validation (no DB persistence, no ownership leakage)
+    return _validate_strategy_internal(payload)
+
+
 @router.post("", response_model=StrategyResponse, status_code=status.HTTP_201_CREATED)
 def create_strategy(
     payload: dict,
@@ -38,7 +148,7 @@ def create_strategy(
     db: Session = Depends(get_db)
 ):
     # Validate payload
-    validation_res = validate_strategy(payload)
+    validation_res = _validate_strategy_internal(payload)
     if not validation_res["valid"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -121,7 +231,7 @@ def update_strategy(
             detail=f"Strategy with ID '{id}' not found."
         )
 
-    validation_res = validate_strategy(payload)
+    validation_res = _validate_strategy_internal(payload)
     if not validation_res["valid"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

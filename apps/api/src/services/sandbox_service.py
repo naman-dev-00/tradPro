@@ -67,6 +67,22 @@ class SandboxService:
         return SandboxGateService.evaluate_runtime_readiness(db, runtime)
 
     @staticmethod
+    def get_connection_read_only(db: Session, owner_id: str) -> Optional[ProviderConnection]:
+        """
+        Pure read-only lookup of sandbox connection metadata record.
+        Performs zero DB mutations, additions, flushes, or commits.
+        """
+        configured_owner = os.environ.get("UPSTOX_SANDBOX_OWNER_ID", "")
+        if owner_id != configured_owner:
+            raise ResourceNotFoundError("No sandbox connection available for this user.")
+
+        return db.query(ProviderConnection).filter(
+            ProviderConnection.owner_id == owner_id,
+            ProviderConnection.provider_name == "UPSTOX",
+            ProviderConnection.environment == "SANDBOX",
+        ).first()
+
+    @staticmethod
     def get_or_create_connection(db: Session, owner_id: str) -> ProviderConnection:
         """
         Gets or initializes the sandbox connection metadata record for the configured owner.

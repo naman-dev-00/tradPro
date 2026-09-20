@@ -60,21 +60,107 @@ def snapshot_object(value) -> str:
     return encoded
 
 
-def consent_fingerprint(*, owner_id, consent_at, snapshot_fingerprint,
-                        source_type, replay_open_at, replay_close_at, execution_policy):
-    return _fingerprint("orchestration_consent_v1", dict(
-        consent_policy_version="fixture_consent_v1", confirmed_user_id=owner_id,
-        confirmed_at=consent_at, snapshot_fingerprint=snapshot_fingerprint,
-        source_type=source_type, approved_replay_open_at=replay_open_at,
-        approved_replay_close_at=replay_close_at, execution_policy=execution_policy,
-    ))
+def consent_fingerprint(
+    *,
+    consent_schema_version: str = "fixture_consent_v1",
+    actor_user_id: str,
+    owner_id: str,
+    runtime_id: str,
+    orchestration_config_id: str,
+    snapshot_fingerprint: str,
+    mapping_identity: str,
+    mapping_version: int,
+    ordered_dataset_identities: list,
+    dataset_provenance_or_revision: list,
+    timeframe: str,
+    alignment_offset_seconds: int,
+    replay_open_at,
+    replay_close_at,
+    source_type: str,
+    execution_policy: str,
+    explicit_live_trading_prohibition: bool = True,
+    explicit_internal_mock_confirmation: bool = True,
+    **extra_kwargs,
+) -> str:
+    """Canonical consent fingerprinting strictly binding all 18 authoritative dimensions."""
+    def _sort_key(item):
+        if isinstance(item, dict):
+            return str(item.get("dataset_id", ""))
+        return str(item)
+
+    payload = {
+        "consent_schema_version": str(consent_schema_version),
+        "actor_user_id": str(actor_user_id),
+        "owner_id": str(owner_id),
+        "runtime_id": str(runtime_id),
+        "orchestration_config_id": str(orchestration_config_id),
+        "snapshot_fingerprint": str(snapshot_fingerprint),
+        "mapping_identity": str(mapping_identity),
+        "mapping_version": int(mapping_version),
+        "ordered_dataset_identities": sorted(ordered_dataset_identities, key=_sort_key),
+        "dataset_provenance_or_revision": sorted(dataset_provenance_or_revision, key=_sort_key),
+        "timeframe": str(timeframe),
+        "alignment_offset_seconds": int(alignment_offset_seconds),
+        "replay_open_at": replay_open_at,
+        "replay_close_at": replay_close_at,
+        "source_type": str(source_type),
+        "execution_policy": str(execution_policy),
+        "explicit_live_trading_prohibition": bool(explicit_live_trading_prohibition),
+        "explicit_internal_mock_confirmation": bool(explicit_internal_mock_confirmation),
+    }
+    return _fingerprint("orchestration_consent_v1", payload)
 
 
-def config_consent_fingerprint(config):
-    return consent_fingerprint(**{key: getattr(config, key) for key in (
-        "owner_id", "consent_at", "snapshot_fingerprint", "source_type",
-        "replay_open_at", "replay_close_at", "execution_policy",
-    )})
+def config_consent_fingerprint(config, actor_user_id: str = None) -> str:
+    """Derive canonical consent fingerprint from a RuntimeOrchestrationConfig model."""
+    snap_dict = {}
+    snap_json = getattr(config, "snapshot_json", None)
+    if snap_json:
+        if isinstance(snap_json, dict):
+            snap_dict = snap_json
+        elif isinstance(snap_json, str):
+            try:
+                snap_dict = json.loads(snap_json)
+            except Exception:
+                snap_dict = {}
+
+    provider_map = snap_dict.get("provider_mapping", {})
+    mapping_id = provider_map.get("mapping_id", "")
+    mapping_ver = provider_map.get("mapping_version", 1)
+
+    datasets = snap_dict.get("datasets", [])
+    ordered_dataset_ids = [
+        {"dataset_id": d["dataset_id"], "series_role": d.get("series_role", "REFERENCE")}
+        for d in datasets if isinstance(d, dict) and "dataset_id" in d
+    ]
+    dataset_provenance = [
+        {"dataset_id": d["dataset_id"], "checksum": d.get("checksum", "")}
+        for d in datasets if isinstance(d, dict) and "dataset_id" in d
+    ]
+
+    actor = actor_user_id or getattr(config, "_actor_user_id", None) or getattr(config, "owner_id", "")
+    config_id = getattr(config, "id", "") or ""
+
+    return consent_fingerprint(
+        consent_schema_version=getattr(config, "consent_policy_version", "fixture_consent_v1") or "fixture_consent_v1",
+        actor_user_id=actor,
+        owner_id=getattr(config, "owner_id", ""),
+        runtime_id=getattr(config, "runtime_id", ""),
+        orchestration_config_id=config_id,
+        snapshot_fingerprint=getattr(config, "snapshot_fingerprint", ""),
+        mapping_identity=mapping_id,
+        mapping_version=mapping_ver,
+        ordered_dataset_identities=ordered_dataset_ids,
+        dataset_provenance_or_revision=dataset_provenance,
+        timeframe=getattr(config, "timeframe", ""),
+        alignment_offset_seconds=getattr(config, "alignment_offset_seconds", 0) or 0,
+        replay_open_at=getattr(config, "replay_open_at"),
+        replay_close_at=getattr(config, "replay_close_at"),
+        source_type=getattr(config, "source_type", ""),
+        execution_policy=getattr(config, "execution_policy", ""),
+        explicit_live_trading_prohibition=True,
+        explicit_internal_mock_confirmation=True,
+    )
 
 
 def evaluation_evidence(value, *, risk=False):

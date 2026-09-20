@@ -61,17 +61,29 @@ def get_sandbox_readiness(
 @router.get("/connection", response_model=ProviderConnectionResponse)
 def get_sandbox_connection(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_read_only_db),
 ):
     """
     Returns sanitized connection metadata for the single configured sandbox owner.
     Credential reference is kept server-side only and never exposed in the response.
     Others receive 404.
+    Strictly read-only: performs zero DB mutations, insertions, flushes, commits, or network calls.
+    If no connection has been configured, returns a safe NOT_CONFIGURED representation.
     """
     rate_limiter.check_rate_limit(f"sandbox_connection:{current_user.id}", max_requests=60, window_seconds=60)
     try:
-        conn = SandboxService.get_or_create_connection(db, current_user.id)
+        conn = SandboxService.get_connection_read_only(db, current_user.id)
         has_env_token = bool(os.environ.get("UPSTOX_SANDBOX_ACCESS_TOKEN", "").strip())
+
+        if not conn:
+            return ProviderConnectionResponse(
+                provider="UPSTOX",
+                environment="SANDBOX",
+                credential_configured=has_env_token,
+                credential_version="v1",
+                readiness_status="NOT_CONFIGURED",
+                last_successful_transmission_at=None,
+            )
 
         return ProviderConnectionResponse(
             provider=conn.provider_name,
