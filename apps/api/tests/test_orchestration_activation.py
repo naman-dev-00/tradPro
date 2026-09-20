@@ -1967,15 +1967,25 @@ def test_real_concurrent_lifecycle_races_postgresql():
     with PostgresSessionLocal() as s:
         # Verify check constraint rejecting invalid timeframe directly in PostgreSQL
         with pytest.raises(Exception) as exc_info:
-            s.execute(text(
-                "INSERT INTO runtime_orchestration_configs "
-                "(id, runtime_id, owner_id, strategy_id, action_mapping_id, source_type, "
-                "source_namespace, timeframe, execution_policy, alignment_policy, "
-                "allowed_instruments_json, source_policy_version, alignment_offset_seconds, "
-                "created_at, updated_at) VALUES "
-                "('cfg_pg_inv', 'rt_pg_inv', 'ow_pg_inv', 'st_pg_inv', 'mp_pg_inv', 'FIXTURE_REPLAY', "
-                "'default', '1h', 'INTERNAL_MOCK_ONLY', 'STRICT_WALL_CLOCK_BOUNDARY', '[]', 1, 0, NOW(), NOW())"
-            ))
+            s.execute(text("""
+                INSERT INTO runtime_orchestration_configs (
+                    id, owner_id, runtime_id, source_type, source_namespace, execution_policy,
+                    snapshot_fingerprint, snapshot_json, consent_at, consent_policy_version,
+                    consent_fingerprint, source_policy_version, alignment_offset_seconds,
+                    timeframe, replay_open_at, replay_close_at, fencing_generation, retry_count,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :owner_id, :runtime_id, 'FIXTURE_REPLAY', 'ns', 'INTERNAL_MOCK_ONLY',
+                    :fp, :snap, NOW(), 'fixture_consent_v1', :fp, 'packaged_alignment_v1', 0,
+                    '1h', NOW(), NOW() + interval '15 minutes', 1, 0, NOW(), NOW()
+                )
+            """), {
+                "id": f"cfg_pg_{uuid.uuid4().hex[:8]}",
+                "owner_id": f"ow_pg_{uuid.uuid4().hex[:8]}",
+                "runtime_id": f"rt_pg_{uuid.uuid4().hex[:8]}",
+                "fp": "0" * 64,
+                "snap": "{}",
+            })
             s.commit()
         s.rollback()
         err_msg = str(exc_info.value).lower()
@@ -1995,9 +2005,9 @@ def test_real_concurrent_lifecycle_races_postgresql():
             "VALUES (:uid, :uname, :uname, :email, :email, 'hash', 'EDITOR', true, NOW(), NOW())"
         ), {"uid": test_user_id, "uname": f"u_{test_user_id}", "email": f"{test_user_id}@test.com"})
         s.execute(text(
-            "INSERT INTO paper_accounts (id, owner_id, trading_mode, base_currency, total_cash_units, "
-            "reserved_cash_units, created_at, updated_at) "
-            "VALUES (:aid, :uid, 'BROKER_SANDBOX_RECORDED_FIXTURE', 'INR', 100000, 0, NOW(), NOW())"
+            "INSERT INTO paper_accounts (id, owner_id, name, currency, total_cash_units, "
+            "reserved_cash_units, is_active, version, created_at, updated_at) "
+            "VALUES (:aid, :uid, 'AccPG', 'INR', 100000, 0, true, 1, NOW(), NOW())"
         ), {"aid": test_acc_id, "uid": test_user_id})
         s.execute(text(
             "INSERT INTO strategies (id, owner_id, name, timeframe, candidate_selection_mode, "
@@ -2005,9 +2015,10 @@ def test_real_concurrent_lifecycle_races_postgresql():
             "VALUES (:sid, :uid, 'StratPG', '15m', 'FIRST_ELIGIBLE', '{}', NOW(), NOW())"
         ), {"sid": test_strat_id, "uid": test_user_id})
         s.execute(text(
-            "INSERT INTO sandbox_runtimes (id, owner_id, account_id, strategy_id, status, "
-            "lifecycle_state, version, trading_mode, created_at, updated_at) "
-            "VALUES (:rid, :uid, :aid, :sid, 'REGISTERED', 'REGISTERED', 1, 'BROKER_SANDBOX_RECORDED_FIXTURE', NOW(), NOW())"
+            "INSERT INTO strategy_runtimes (id, owner_id, account_id, strategy_id, action_policy_id, "
+            "risk_policy_id, status, trading_mode, dataset_id, timeframe, version, created_at, updated_at) "
+            "VALUES (:rid, :uid, :aid, :sid, 'act_mock', 'risk_mock', 'REGISTERED', 'BROKER_SANDBOX_RECORDED_FIXTURE', "
+            "'synthetic_underlying_nifty_15m', '15m', 1, NOW(), NOW())"
         ), {"rid": test_rt_id, "uid": test_user_id, "aid": test_acc_id, "sid": test_strat_id})
         s.commit()
 
@@ -2019,7 +2030,7 @@ def test_real_concurrent_lifecycle_races_postgresql():
             barrier.wait()
             # Attempt atomic CAS transition: REGISTERED -> RUNNING at version 1
             res = s.execute(text(
-                "UPDATE sandbox_runtimes SET status = 'RUNNING', lifecycle_state = 'RUNNING', "
+                "UPDATE strategy_runtimes SET status = 'RUNNING', "
                 "version = version + 1, updated_at = NOW() "
                 "WHERE id = :rid AND version = 1"
             ), {"rid": test_rt_id})
@@ -2041,12 +2052,12 @@ def test_real_concurrent_lifecycle_races_postgresql():
 
     # Verify final state in PostgreSQL
     with PostgresSessionLocal() as s:
-        row = s.execute(text("SELECT status, version FROM sandbox_runtimes WHERE id = :rid"), {"rid": test_rt_id}).mappings().one()
+        row = s.execute(text("SELECT status, version FROM strategy_runtimes WHERE id = :rid"), {"rid": test_rt_id}).mappings().one()
         assert row["status"] == "RUNNING"
         assert row["version"] == 2
 
         # Cleanup test rows
-        s.execute(text("DELETE FROM sandbox_runtimes WHERE id = :rid"), {"rid": test_rt_id})
+        s.execute(text("DELETE FROM strategy_runtimes WHERE id = :rid"), {"rid": test_rt_id})
         s.execute(text("DELETE FROM strategies WHERE id = :sid"), {"sid": test_strat_id})
         s.execute(text("DELETE FROM paper_accounts WHERE id = :aid"), {"aid": test_acc_id})
         s.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": test_user_id})
