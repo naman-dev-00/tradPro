@@ -1996,30 +1996,64 @@ def test_real_concurrent_lifecycle_races_postgresql():
     test_user_id = f"usr_pg_{uuid.uuid4().hex[:8]}"
     test_acc_id = f"acc_pg_{uuid.uuid4().hex[:8]}"
     test_strat_id = f"st_pg_{uuid.uuid4().hex[:8]}"
+    test_act_id = f"act_pg_{uuid.uuid4().hex[:8]}"
+    test_risk_id = f"risk_pg_{uuid.uuid4().hex[:8]}"
 
     with PostgresSessionLocal() as s:
-        # Seed minimal rows for PostgreSQL concurrency test
-        s.execute(text(
-            "INSERT INTO users (id, username, normalized_username, email, normalized_email, "
-            "hashed_password, role, is_active, created_at, updated_at) "
-            "VALUES (:uid, :uname, :uname, :email, :email, 'hash', 'EDITOR', true, NOW(), NOW())"
-        ), {"uid": test_user_id, "uname": f"u_{test_user_id}", "email": f"{test_user_id}@test.com"})
-        s.execute(text(
-            "INSERT INTO paper_accounts (id, owner_id, name, currency, total_cash_units, "
-            "reserved_cash_units, is_active, version, created_at, updated_at) "
-            "VALUES (:aid, :uid, 'AccPG', 'INR', 100000, 0, true, 1, NOW(), NOW())"
-        ), {"aid": test_acc_id, "uid": test_user_id})
-        s.execute(text(
-            "INSERT INTO strategies (id, owner_id, name, timeframe, candidate_selection_mode, "
-            "payload, created_at, updated_at) "
-            "VALUES (:sid, :uid, 'StratPG', '15m', 'FIRST_ELIGIBLE', '{}', NOW(), NOW())"
-        ), {"sid": test_strat_id, "uid": test_user_id})
-        s.execute(text(
-            "INSERT INTO strategy_runtimes (id, owner_id, account_id, strategy_id, action_policy_id, "
-            "risk_policy_id, status, trading_mode, dataset_id, timeframe, version, created_at, updated_at) "
-            "VALUES (:rid, :uid, :aid, :sid, 'act_mock', 'risk_mock', 'REGISTERED', 'BROKER_SANDBOX_RECORDED_FIXTURE', "
-            "'synthetic_underlying_nifty_15m', '15m', 1, NOW(), NOW())"
-        ), {"rid": test_rt_id, "uid": test_user_id, "aid": test_acc_id, "sid": test_strat_id})
+        # Seed minimal rows for PostgreSQL concurrency test using ORM entities
+        u = User(
+            id=test_user_id,
+            username=f"u_{test_user_id}",
+            normalized_username=f"u_{test_user_id}",
+            email=f"{test_user_id}@test.com",
+            normalized_email=f"{test_user_id}@test.com",
+            hashed_password="hash",
+            role="EDITOR",
+            is_active=True,
+        )
+        acc = PaperAccount(
+            id=test_acc_id,
+            owner_id=test_user_id,
+            name="AccPG",
+            currency="INR",
+            total_cash_units=100000,
+            reserved_cash_units=0,
+        )
+        strat = Strategy(
+            id=test_strat_id,
+            owner_id=test_user_id,
+            name="StratPG",
+            timeframe="15m",
+            candidate_selection_mode="FIRST_ELIGIBLE",
+            payload={},
+        )
+        act = StrategyActionPolicy(
+            id=test_act_id,
+            owner_id=test_user_id,
+            strategy_id=test_strat_id,
+            name="ActPG",
+            payload={},
+        )
+        risk = RiskPolicy(
+            id=test_risk_id,
+            owner_id=test_user_id,
+            name="RiskPG",
+            payload={},
+        )
+        rt = StrategyRuntime(
+            id=test_rt_id,
+            owner_id=test_user_id,
+            account_id=test_acc_id,
+            strategy_id=test_strat_id,
+            action_policy_id=test_act_id,
+            risk_policy_id=test_risk_id,
+            status="READY",
+            trading_mode="PAPER",
+            dataset_id="synthetic_underlying_nifty_15m",
+            timeframe="15m",
+            version=1,
+        )
+        s.add_all([u, acc, strat, act, risk, rt])
         s.commit()
 
     barrier = threading.Barrier(2)
@@ -2028,7 +2062,7 @@ def test_real_concurrent_lifecycle_races_postgresql():
     def _concurrent_cas_worker(worker_id):
         with PostgresSessionLocal() as s:
             barrier.wait()
-            # Attempt atomic CAS transition: REGISTERED -> RUNNING at version 1
+            # Attempt atomic CAS transition: READY -> RUNNING at version 1
             res = s.execute(text(
                 "UPDATE strategy_runtimes SET status = 'RUNNING', "
                 "version = version + 1, updated_at = NOW() "
@@ -2058,6 +2092,8 @@ def test_real_concurrent_lifecycle_races_postgresql():
 
         # Cleanup test rows
         s.execute(text("DELETE FROM strategy_runtimes WHERE id = :rid"), {"rid": test_rt_id})
+        s.execute(text("DELETE FROM risk_policies WHERE id = :rpid"), {"rpid": test_risk_id})
+        s.execute(text("DELETE FROM strategy_action_policies WHERE id = :apid"), {"apid": test_act_id})
         s.execute(text("DELETE FROM strategies WHERE id = :sid"), {"sid": test_strat_id})
         s.execute(text("DELETE FROM paper_accounts WHERE id = :aid"), {"aid": test_acc_id})
         s.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": test_user_id})
