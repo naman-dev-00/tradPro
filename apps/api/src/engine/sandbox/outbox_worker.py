@@ -7,8 +7,8 @@ import sys
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
-from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, and_
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import func, or_, and_, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.database import SessionLocal
@@ -22,6 +22,12 @@ from src.models import (
     ReconciliationRecord,
     SubmissionOutbox,
     WorkerHeartbeat,
+    RuntimeOrchestrationConfig,
+    StrategyRuntime,
+)
+from src.engine.orchestration.transmission_gate import (
+    assert_orchestration_execution_is_internal_only,
+    TransmissionProhibitedError,
 )
 from src.engine.paper.models import (
     LedgerEntryType,
@@ -332,6 +338,43 @@ class SandboxOutboxWorker:
             outbox.last_error_code = "ORDER_NOT_FOUND"
             outbox.last_error_message = f"Referenced order {outbox.order_id} does not exist."
             return
+
+        # Double check that the order does not belong to an orchestration fixture runtime
+        if order.runtime_id:
+            runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == order.runtime_id).first()
+            is_orch_fixture = runtime and runtime.trading_mode == "BROKER_SANDBOX_RECORDED_FIXTURE"
+            orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == order.runtime_id).first()
+
+            if orch_cfg or is_orch_fixture:
+                if orch_cfg:
+                    assert_orchestration_execution_is_internal_only(orch_cfg)
+
+                # Safe Design B: Atomic conditional update via separate fresh session bound to the same engine.
+                # Caller session `db` is NEVER committed or rolled back from this nested helper.
+                engine = db.bind
+                FreshSession = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+                with FreshSession() as fresh_db:
+                    stmt = (
+                        update(SubmissionOutbox)
+                        .where(SubmissionOutbox.id == outbox.id)
+                        .values(
+                            status="DEAD_LETTER",
+                            claimed_by=None,
+                            claim_lease_until=None,
+                            last_error_code="TRANSMISSION_PROHIBITED",
+                            last_error_message="External transmission is prohibited for orchestration fixture runtime.",
+                        )
+                    )
+                    fresh_db.execute(stmt)
+                    fresh_db.commit()
+
+                # Expire and reload the caller-owned row in-memory so it reflects the new state
+                db.expire(outbox)
+                db.refresh(outbox)
+
+                raise TransmissionProhibitedError(
+                    f"External transmission attempted on orchestration fixture runtime '{order.runtime_id}' for order '{order.id}'."
+                )
 
         # Double check all network transmission gates immediately before transmission
         allowed, gate_reasons = SandboxGateService.check_outbox_transmission_gates(

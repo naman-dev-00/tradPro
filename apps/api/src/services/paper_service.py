@@ -29,6 +29,11 @@ from src.models import (
     SubmissionOutbox,
     ProviderInstrumentMapping,
     ExternalOrderLink,
+    RuntimeOrchestrationConfig,
+)
+from src.engine.orchestration.transmission_gate import (
+    assert_orchestration_execution_is_internal_only,
+    TransmissionProhibitedError,
 )
 from src.engine.paper.models import (
     TradingMode,
@@ -621,11 +626,28 @@ class PaperService:
         db.add(evt1)
         db.flush()
 
-        # Check if runtime is in a sandbox mode
+        # Explicit dispatch routing (INTERNAL_PAPER vs EXTERNAL_SANDBOX_DISPATCH)
         runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == order.runtime_id).first()
-        is_sandbox = runtime and runtime.trading_mode in (TradingMode.BROKER_SANDBOX.value, TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+        orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == runtime.id).first() if runtime else None
+        is_orch = (
+            (orch_cfg is not None)
+            or (runtime is not None and runtime.trading_mode == TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+        )
 
-        if is_sandbox:
+        if is_orch:
+            if orch_cfg:
+                assert_orchestration_execution_is_internal_only(orch_cfg)
+            cancel_path = "INTERNAL_PAPER"
+        elif runtime and runtime.trading_mode == TradingMode.BROKER_SANDBOX.value:
+            cancel_path = "EXTERNAL_SANDBOX_DISPATCH"
+        elif runtime and runtime.trading_mode == TradingMode.PAPER.value:
+            cancel_path = "INTERNAL_PAPER"
+        else:
+            cancel_path = "INTERNAL_PAPER"
+
+        if cancel_path == "EXTERNAL_SANDBOX_DISPATCH":
+            if is_orch:
+                raise TransmissionProhibitedError("Attempted to queue external CANCEL outbox for orchestration fixture runtime.")
             # Sandbox mode: do NOT immediately confirm CANCELLED or release cash!
             # Queue a CANCEL outbox record. Cash is released upon confirmed provider cancellation or manual resolution.
             cancel_payload = {"order_id": order.id, "reason": reason}
@@ -1242,9 +1264,30 @@ class PaperService:
             db.add(order)
             return intent
 
-        # Passed risk -> Create order in ACCEPTED (for PAPER) or PENDING_SUBMISSION (for SANDBOX)
-        is_sandbox = runtime.trading_mode in (TradingMode.BROKER_SANDBOX.value, TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
-        initial_status = OrderStatus.PENDING_SUBMISSION.value if is_sandbox else OrderStatus.ACCEPTED.value
+        # Passed risk -> Explicit dispatch routing (INTERNAL_PAPER vs EXTERNAL_SANDBOX_DISPATCH)
+        orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == runtime.id).first() if runtime else None
+        is_orch = (
+            (orch_cfg is not None)
+            or (runtime.trading_mode == TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+        )
+
+        if is_orch:
+            if orch_cfg:
+                assert_orchestration_execution_is_internal_only(orch_cfg)
+            execution_route = "INTERNAL_PAPER"
+        elif runtime.trading_mode == TradingMode.BROKER_SANDBOX.value:
+            execution_route = "EXTERNAL_SANDBOX_DISPATCH"
+        elif runtime.trading_mode == TradingMode.PAPER.value:
+            execution_route = "INTERNAL_PAPER"
+        else:
+            raise ValueError(f"Unknown or unsupported trading_mode '{runtime.trading_mode}'")
+
+        if execution_route == "INTERNAL_PAPER":
+            initial_status = OrderStatus.ACCEPTED.value
+        elif execution_route == "EXTERNAL_SANDBOX_DISPATCH":
+            if is_orch:
+                raise TransmissionProhibitedError("Orchestration fixtures are strictly forbidden from external sandbox dispatch")
+            initial_status = OrderStatus.PENDING_SUBMISSION.value
 
         o_seq = db.query(func.coalesce(func.max(Order.order_sequence_number), 0)).filter(Order.runtime_id == runtime.id).scalar() + 1
         order = Order(
@@ -1271,7 +1314,7 @@ class PaperService:
             previous_status=OrderStatus.CREATED.value,
             new_status=initial_status,
             actor="SYSTEM_OMS",
-            reason_code="RISK_CHECK_PASSED" if not is_sandbox else "RISK_CHECK_PASSED_QUEUED_FOR_SANDBOX",
+            reason_code="RISK_CHECK_PASSED" if execution_route == "INTERNAL_PAPER" else "RISK_CHECK_PASSED_QUEUED_FOR_SANDBOX",
         )
         db.add(evt)
 
@@ -1302,8 +1345,10 @@ class PaperService:
             db.add(ledger)
             db.flush()
 
-        # If sandbox mode: create submission outbox record
-        if is_sandbox:
+        # If external sandbox dispatch: create submission outbox record
+        if execution_route == "EXTERNAL_SANDBOX_DISPATCH":
+            if is_orch:
+                raise TransmissionProhibitedError("Attempted to create SubmissionOutbox for orchestration fixture runtime.")
             frozen_mapping = (runtime.instrument_spec_snapshot or {}).get("provider_mapping")
             if not frozen_mapping or "provider_instrument_token" not in frozen_mapping:
                 raise ValueError(f"Runtime '{runtime.id}' lacks a frozen verified provider instrument mapping.")

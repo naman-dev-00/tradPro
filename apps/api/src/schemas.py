@@ -81,16 +81,20 @@ class ConditionNode(BaseModel):
 ConditionNode.model_rebuild()
 
 class RiskConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     max_position_size: float = Field(..., ge=0)
     stop_loss_pct: float = Field(..., ge=0)
     take_profit_pct: float = Field(..., ge=0)
     validity_window: int = Field(..., ge=1)
 
 class PaperTradeAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: str
     risk_config: RiskConfiguration
 
 class StrategyBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: Optional[str] = None
     name: str = Field(..., min_length=1)
     description: Optional[str] = None
     timeframe: str
@@ -100,14 +104,14 @@ class StrategyBase(BaseModel):
     action: PaperTradeAction
 
 class StrategyCreate(StrategyBase):
-    id: Optional[str] = None
+    pass
 
 class StrategyResponse(StrategyBase):
     id: str
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 DefinitionRef = Any
 
@@ -489,3 +493,82 @@ class ReconciliationRecordResponse(BaseModel):
     notes: Optional[str] = None
     resolved_at: Optional[datetime.datetime] = None
     created_at: datetime.datetime
+
+
+# --- Milestone 6C Phase 2 Orchestration Schemas ---
+
+class OrchestrationConsentSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    consent_version: str = Field("fixture_consent_v1", max_length=50)
+    acknowledged_source_type: str = Field(..., max_length=50)
+    acknowledged_execution_policy: str = Field(..., max_length=50)
+    acknowledged_timeframe: Literal["5m", "15m"]
+    acknowledged_replay_open_at: datetime.datetime
+    acknowledged_replay_close_at: datetime.datetime
+    acknowledged_dataset_ids: List[str] = Field(..., min_length=1, max_length=2)
+    confirm_prohibition_of_live_trading: bool = True
+    confirm_internal_mock_only: bool = True
+
+
+class OrchestrationDatasetRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_id: str = Field(..., min_length=1, max_length=100)
+    series_role: Literal["REFERENCE", "SUBJECT"]
+
+
+class OrchestrationConfigCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runtime_id: str = Field(..., min_length=1, max_length=36)
+    timeframe: Literal["5m", "15m"]
+    replay_open_at: datetime.datetime
+    replay_close_at: datetime.datetime
+    strategy_version: int = Field(1, gt=0)
+    datasets: List[OrchestrationDatasetRef] = Field(..., min_length=1, max_length=2)
+    provider_mapping_id: str = Field(..., min_length=1, max_length=36)
+    consent: OrchestrationConsentSubmission
+
+
+class OrchestrationActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    consent_version: str = Field("fixture_consent_v1", max_length=50)
+    acknowledged_execution_policy: str = Field("INTERNAL_MOCK_ONLY", max_length=50)
+    confirm_internal_mock_only: bool = True
+
+
+class OrchestrationConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    runtime_id: str
+    source_type: str
+    source_namespace: str
+    execution_policy: str
+    snapshot_fingerprint: str
+    consent_fingerprint: str
+    consent_policy_version: str
+    consent_at: datetime.datetime
+    timeframe: str
+    replay_open_at: datetime.datetime
+    replay_close_at: datetime.datetime
+    checkpoint_close_at: Optional[datetime.datetime] = None
+    fencing_generation: int
+    retry_count: int
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class OrchestrationLifecycleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runtime_id: str
+    status: str
+    previous_status: Optional[str] = None
+    action: str
+    message: str
+    timestamp: datetime.datetime
+
+
+class OrchestrationReadinessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runtime_id: str
+    ready: bool
+    reasons: List[str]
+    gates: Dict[str, bool]
