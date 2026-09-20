@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import verify_database_connection
 from src.middleware.observability import ObservabilityMiddleware
+from src.middleware.session_touch import SessionTouchMiddleware
 from src.services.sandbox_gate_service import SandboxGateService
 from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper, sandbox, orchestration
 
@@ -35,6 +36,9 @@ app.add_middleware(
 
 # Enable Request-ID and Observability Logging Middleware
 app.add_middleware(ObservabilityMiddleware)
+
+# Enable Post-Request Session Activity Touch Middleware
+app.add_middleware(SessionTouchMiddleware)
 
 # Include routers
 app.include_router(health.router)

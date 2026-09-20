@@ -4,7 +4,7 @@ from typing import List, Optional, Any, Dict
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
-from src.database import get_db, get_read_only_db
+from src.database import get_db
 from src.models import (
     User,
     PaperAccount,
@@ -94,7 +94,7 @@ def save_idempotency(db: Session, owner_id: str, idempotency_key: Optional[str],
 @router.get("/accounts", response_model=List[PaperAccountResponse])
 def list_accounts(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     accounts = PaperService.list_accounts(db, current_user.id)
     return [
@@ -152,7 +152,7 @@ def create_account(
 def get_account(
     id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     a = PaperService.get_account(db, id, current_user.id)
     if not a:
@@ -176,7 +176,7 @@ def get_account_ledger(
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     a = PaperService.get_account(db, id, current_user.id)
     if not a:
@@ -207,7 +207,7 @@ def get_account_ledger(
 @router.get("/action-policies", response_model=List[StrategyActionPolicyResponse])
 def list_action_policies(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     return PaperService.list_action_policies(db, current_user.id)
 
@@ -244,7 +244,7 @@ def create_action_policy(
 def get_action_policy(
     id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     policy = PaperService.get_action_policy(db, id, current_user.id)
     if not policy:
@@ -256,7 +256,7 @@ def get_action_policy(
 @router.get("/risk-policies", response_model=List[RiskPolicyResponse])
 def list_risk_policies(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     return PaperService.list_risk_policies(db, current_user.id)
 
@@ -296,7 +296,7 @@ def create_risk_policy(
 def get_risk_policy(
     id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     policy = PaperService.get_risk_policy(db, id, current_user.id)
     if not policy:
@@ -308,7 +308,7 @@ def get_risk_policy(
 @router.get("/runtimes", response_model=List[StrategyRuntimeResponse])
 def list_runtimes(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     return db.query(StrategyRuntime).filter(StrategyRuntime.owner_id == current_user.id).order_by(StrategyRuntime.created_at.desc()).all()
 
@@ -350,7 +350,7 @@ def create_runtime(
 def get_runtime(
     id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == id, StrategyRuntime.owner_id == current_user.id).first()
     if not runtime:
@@ -472,7 +472,7 @@ def step_runtime(
 def get_runtime_events(
     id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == id, StrategyRuntime.owner_id == current_user.id).first()
     if not runtime:
@@ -485,7 +485,7 @@ def get_runtime_events(
 def list_orders(
     runtime_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     q = db.query(Order).filter(Order.owner_id == current_user.id)
     if runtime_id:
@@ -517,7 +517,7 @@ def list_orders(
 def get_order(
     id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     o = db.query(Order).filter(Order.id == id, Order.owner_id == current_user.id).first()
     if not o:
@@ -598,7 +598,7 @@ def cancel_order(
 def list_fills(
     account_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     q = db.query(Fill).join(PaperAccount, Fill.account_id == PaperAccount.id).filter(PaperAccount.owner_id == current_user.id)
     if account_id:
@@ -625,7 +625,7 @@ def list_fills(
 def list_positions(
     account_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     q = db.query(PaperPosition).filter(PaperPosition.owner_id == current_user.id)
     if account_id:
@@ -655,7 +655,7 @@ def list_positions(
 @router.get("/kill-switch", response_model=KillSwitchStatusResponse)
 def get_kill_switch(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db)
+    db: Session = Depends(get_db)
 ):
     status_dict = PaperService.get_kill_switch_status(db, current_user.id)
     return KillSwitchStatusResponse(**status_dict)

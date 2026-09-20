@@ -5,7 +5,7 @@ from typing import List, Optional
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from src.database import get_db, get_read_only_db
+from src.database import get_db
 from src.models import User, SubmissionOutbox
 from src.schemas import (
     SandboxReadinessResponse,
@@ -40,7 +40,7 @@ router = APIRouter(prefix="/api/v1/sandbox", tags=["sandbox"])
 def get_sandbox_readiness(
     runtime_id: str = Query(..., description="ID of the strategy runtime"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     """
     Mandatory Correction 6:
@@ -61,7 +61,7 @@ def get_sandbox_readiness(
 @router.get("/connection", response_model=ProviderConnectionResponse)
 def get_sandbox_connection(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     """
     Returns sanitized connection metadata for the single configured sandbox owner.
@@ -147,7 +147,7 @@ def update_sandbox_connection(
 @router.get("/instruments", response_model=List[ProviderInstrumentMappingResponse])
 def list_instrument_mappings(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     rate_limiter.check_rate_limit(f"sandbox_inst_list:{current_user.id}", max_requests=60, window_seconds=60)
     mappings = SandboxService.list_instrument_mappings(db, current_user.id)
@@ -322,7 +322,7 @@ def disable_instrument_mapping(
 @router.get("/outbox", response_model=List[SubmissionOutboxResponse])
 def list_outbox_entries(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     rate_limiter.check_rate_limit(f"sandbox_outbox_list:{current_user.id}", max_requests=60, window_seconds=60)
     entries = SandboxService.list_outbox(db, current_user.id)
@@ -353,7 +353,7 @@ def list_outbox_entries(
 @router.get("/reconciliations", response_model=List[ReconciliationRecordResponse])
 def list_reconciliation_records(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     rate_limiter.check_rate_limit(f"sandbox_recon_list:{current_user.id}", max_requests=60, window_seconds=60)
     records = SandboxService.list_reconciliation_records(db, current_user.id)
