@@ -1,4 +1,6 @@
 import logging
+from typing import Optional
+from starlette.requests import Request
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -54,6 +56,11 @@ def get_db_url() -> str:
 
     raise RuntimeError("DATABASE_URL environment variable is required in staging and production environments.")
 
+def is_sqlite_locked_error(exc: Exception) -> bool:
+    """Return True if exception indicates a transient SQLite lock/busy error."""
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database table is locked" in msg or "busy" in msg
+
 def create_db_engine(db_url: str):
     if settings.APP_ENV == "test":
         require_disposable_target(db_url)
@@ -79,16 +86,22 @@ def create_db_engine(db_url: str):
 
         @event.listens_for(eng, "begin")
         def do_begin(conn):
-            # Check if this transaction is explicitly marked read_only
-            if conn.info.get("read_only", False) or conn.get_execution_options().get("read_only", False):
+            # Check if this transaction is explicitly marked for deferred read transaction
+            if (
+                conn.info.get("deferred_read_transaction", False)
+                or conn.get_execution_options().get("deferred_read_transaction", False)
+                or conn.info.get("read_only", False)
+                or conn.get_execution_options().get("read_only", False)
+            ):
                 conn.exec_driver_sql("BEGIN")
             else:
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
 
         @event.listens_for(eng, "checkin")
         def do_checkin(dbapi_connection, connection_record):
-            # Clear connection info to ensure read_only cannot leak across pooled checkouts
+            # Clear connection info to ensure transaction flags cannot leak across pooled checkouts
             if connection_record and hasattr(connection_record, "info"):
+                connection_record.info.pop("deferred_read_transaction", None)
                 connection_record.info.pop("read_only", None)
 
     return eng
@@ -127,7 +140,7 @@ def verify_database_connection():
         if not Path(url.database).is_file():
             raise RuntimeError(instruction)
     try:
-        with engine.connect().execution_options(read_only=True) as conn:
+        with engine.connect().execution_options(deferred_read_transaction=True, read_only=True) as conn:
             conn.execute(text("SELECT 1"))
             if not inspect(conn).has_table("alembic_version"):
                 raise RuntimeError(instruction)
@@ -139,22 +152,40 @@ def verify_database_connection():
         raise RuntimeError(instruction) from None
 
 
-def get_db():
-    db = SessionLocal()
+def get_db(request: Request = None):
+    """
+    Request-scoped database session dependency:
+    - For read-oriented HTTP methods (GET, HEAD, OPTIONS), binds deferred_read_transaction=True
+      so SQLite issues standard 'BEGIN' without holding an exclusive writer lock.
+    - For mutating methods (POST, PUT, PATCH, DELETE) or non-request callers, binds standard engine
+      so SQLite issues 'BEGIN IMMEDIATE' to serialize writers safely.
+    - Guarantees deterministic rollback on unhandled exceptions and session closure on exit.
+    """
+    if request is not None and getattr(request, "method", "").upper() in ("GET", "HEAD", "OPTIONS"):
+        db = SessionLocal(bind=engine.execution_options(deferred_read_transaction=True))
+    else:
+        db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
+
 def get_read_only_db():
     """
-    Read-only database dependency for GET requests:
-    - Sets execution_options(read_only=True) on the engine so SQLite emits standard BEGIN without write reservation.
-    - Connection checkin listener and session close ensure read_only flag is never leaked
-      to subsequent write requests on pooled connections.
+    Explicit read-only database dependency for standalone contexts:
+    - Sets execution_options(deferred_read_transaction=True) so SQLite emits standard BEGIN.
+    - Connection checkin listener ensures flags are never leaked to subsequent requests.
+    - Guarantees deterministic rollback on unhandled exceptions and session closure on exit.
     """
-    db = SessionLocal(bind=engine.execution_options(read_only=True))
+    db = SessionLocal(bind=engine.execution_options(deferred_read_transaction=True))
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

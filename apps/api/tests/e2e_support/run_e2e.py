@@ -50,6 +50,50 @@ def find_free_port(preferred_port: int, host: str = "127.0.0.1") -> int:
         s.bind((host, 0))
         return s.getsockname()[1]
 
+def terminate_process_tree(proc: subprocess.Popen | None, name: str) -> None:
+    if not proc:
+        return
+    if proc.poll() is not None:
+        return
+
+    print(f"Terminating {name} (PID={proc.pid})...")
+    if os.name == "nt":
+        try:
+            # taskkill /F /T kills the process and all descendant children
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        except Exception as e:
+            print(f"Warning: error terminating {name}: {e}", file=sys.stderr)
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+    else:
+        import signal
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print(f"{name} did not exit within timeout, sending SIGKILL...", file=sys.stderr)
+                os.killpg(pgid, signal.SIGKILL)
+                proc.wait(timeout=5)
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            print(f"Warning: error terminating process group for {name}: {e}", file=sys.stderr)
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
 def main():
     current_file = pathlib.Path(__file__).resolve()
     api_dir = current_file.parent.parent.parent  # apps/api
@@ -92,6 +136,12 @@ def main():
     e2e_env["NEXT_PUBLIC_API_URL"] = f"http://127.0.0.1:{api_port}"
     e2e_env["PLAYWRIGHT_BASE_URL"] = f"http://127.0.0.1:{web_port}"
 
+    popen_kwargs = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
     api_proc = None
     web_proc = None
     exit_code = 1
@@ -110,7 +160,7 @@ def main():
         # 5. Start FastAPI backend process
         print(f"\n--- Starting FastAPI Backend Process on Port {api_port} ---")
         api_cmd = [sys.executable, "-m", "uvicorn", "src.main:app", "--host", "127.0.0.1", "--port", str(api_port)]
-        api_proc = subprocess.Popen(api_cmd, cwd=str(api_dir), env=e2e_env)
+        api_proc = subprocess.Popen(api_cmd, cwd=str(api_dir), env=e2e_env, **popen_kwargs)
 
         print("Polling FastAPI backend readiness...")
         if not poll_url(f"http://127.0.0.1:{api_port}/health", timeout_seconds=20):
@@ -125,16 +175,17 @@ def main():
         # 7. Start Next.js production server
         print(f"\n--- Starting Next.js Web Server on Port {web_port} ---")
         start_cmd = ["npm.cmd" if os.name == "nt" else "npm", "run", "start", "--", "-p", str(web_port), "-H", "127.0.0.1"]
-        web_proc = subprocess.Popen(start_cmd, cwd=str(web_dir), env=e2e_env)
+        web_proc = subprocess.Popen(start_cmd, cwd=str(web_dir), env=e2e_env, **popen_kwargs)
 
         print("Polling Next.js frontend readiness...")
         if not poll_url(f"http://127.0.0.1:{web_port}", timeout_seconds=20):
             raise RuntimeError(f"Next.js frontend failed to become ready at http://127.0.0.1:{web_port}")
         print("Next.js frontend is ready.")
 
-        # 8. Execute Playwright E2E Test Suite
+        # 8. Execute Playwright E2E Test Suite (forwarding any CLI arguments)
         print("\n--- Executing Playwright Test Suite ---")
-        test_cmd = ["npx.cmd" if os.name == "nt" else "npx", "playwright", "test"]
+        extra_args = sys.argv[1:]
+        test_cmd = ["npx.cmd" if os.name == "nt" else "npx", "playwright", "test"] + extra_args
         test_res = subprocess.run(test_cmd, cwd=str(web_dir), env=e2e_env)
         exit_code = test_res.returncode
 
@@ -143,19 +194,10 @@ def main():
         exit_code = 1
 
     finally:
-        # 9. Clean up running processes
+        # 9. Clean up running processes and ensure complete exit
         print("\n--- Shutting Down Test Servers ---")
-        if web_proc:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(web_proc.pid)], capture_output=True)
-            else:
-                web_proc.terminate()
-
-        if api_proc:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(api_proc.pid)], capture_output=True)
-            else:
-                api_proc.terminate()
+        terminate_process_tree(web_proc, "Next.js frontend")
+        terminate_process_tree(api_proc, "FastAPI backend")
 
         # 10. Verify primary development DB was untouched
         final_db_stats = get_file_stats(dev_db_path)

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_user, require_csrf, require_roles
 from src.auth.rate_limiter import rate_limiter
-from src.database import get_db, get_read_only_db
+from src.database import get_db
 from src.models import User
 from src.schemas import (
     OrchestrationActivationRequest,
@@ -77,7 +77,7 @@ def create_orchestration_config(
 def get_orchestration_config(
     runtime_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     """Read-only retrieval of orchestration configuration for an owned runtime."""
     rate_limiter.check_rate_limit(f"orch_config_get:{current_user.id}", max_requests=60, window_seconds=60)
@@ -110,7 +110,7 @@ def get_orchestration_config(
 def get_orchestration_readiness(
     runtime_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_read_only_db),
+    db: Session = Depends(get_db),
 ):
     """Read-only evaluation of activation readiness gates for an owned runtime."""
     rate_limiter.check_rate_limit(f"orch_readiness:{current_user.id}", max_requests=60, window_seconds=60)

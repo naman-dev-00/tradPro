@@ -14,7 +14,7 @@ def get_current_session(request: Request, db: Session = Depends(get_db)) -> User
             detail="Authentication required."
         )
 
-    session = get_active_session(db, raw_token)
+    session = get_active_session(db, raw_token, request=request)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -42,7 +42,7 @@ def get_optional_current_user(
     raw_token = request.cookies.get("tradepro_session")
     if not raw_token:
         return None
-    session = get_active_session(db, raw_token)
+    session = get_active_session(db, raw_token, request=request)
     if not session:
         return None
     user = db.query(User).filter(User.id == session.user_id).first()
