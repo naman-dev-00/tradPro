@@ -177,9 +177,83 @@ def cmd_transfer_legacy(args):
     finally:
         db.close()
 
+import math
+import re
+
+def validate_worker_args(args):
+    """Strictly validate bounded worker parameters, rejecting extreme values, NaN, and Infinity."""
+    # Batch size: integer, 1 to 100
+    if args.batch_size is None or not isinstance(args.batch_size, int) or isinstance(args.batch_size, bool) or not (1 <= args.batch_size <= 100):
+        print("Error: --batch-size must be an integer between 1 and 100.", file=sys.stderr)
+        sys.exit(2)
+
+    # Lease duration: integer, 5 to 300 seconds
+    if args.lease_duration is None or not isinstance(args.lease_duration, int) or isinstance(args.lease_duration, bool) or not (5 <= args.lease_duration <= 300):
+        print("Error: --lease-duration must be an integer between 5 and 300 seconds.", file=sys.stderr)
+        sys.exit(2)
+
+    # Poll interval: float/int, 0.1 to 60.0 seconds; reject NaN and Inf
+    if (
+        args.poll_interval is None
+        or not isinstance(args.poll_interval, (int, float))
+        or isinstance(args.poll_interval, bool)
+        or math.isnan(args.poll_interval)
+        or math.isinf(args.poll_interval)
+        or not (0.1 <= args.poll_interval <= 60.0)
+    ):
+        print("Error: --poll-interval must be a valid number between 0.1 and 60.0 seconds.", file=sys.stderr)
+        sys.exit(2)
+
+    # Max runs: None (continuous mode) or integer, 1 to 10000
+    if args.max_runs is not None:
+        if (
+            not isinstance(args.max_runs, int)
+            or isinstance(args.max_runs, bool)
+            or not (1 <= args.max_runs <= 10000)
+        ):
+            print("Error: --max-runs must be an integer between 1 and 10000, or omitted for continuous mode.", file=sys.stderr)
+            sys.exit(2)
+
+    # Worker ID: optional string, 1 to 50 chars matching ^[A-Za-z0-9_.-]+$
+    if args.worker_id is not None:
+        if (
+            not isinstance(args.worker_id, str)
+            or not (1 <= len(args.worker_id) <= 50)
+            or not re.match(r"^[A-Za-z0-9_.-]+$", args.worker_id)
+        ):
+            print("Error: --worker-id must be 1-50 characters matching ^[A-Za-z0-9_.-]+$.", file=sys.stderr)
+            sys.exit(2)
+
 def cmd_sandbox_worker(args):
+    validate_worker_args(args)
     from src.engine.sandbox.outbox_worker import SandboxOutboxWorker
     worker = SandboxOutboxWorker(
+        worker_id=args.worker_id,
+        batch_size=args.batch_size,
+        lease_duration_seconds=args.lease_duration,
+        poll_interval_seconds=args.poll_interval,
+    )
+    worker.run(max_runs=args.max_runs)
+
+def cmd_evaluation_worker(args):
+    import os
+    app_env = os.environ.get("APP_ENV", "development").lower()
+    if app_env == "production":
+        print("Error: Strategy evaluation worker execution is strictly prohibited in production.", file=sys.stderr)
+        sys.exit(1)
+
+    # In test mode, guard disposable database target
+    if app_env == "test":
+        db_url = os.environ.get("DATABASE_URL", "")
+        from src.database_safety import reject_development_test_target, require_disposable_target
+        reject_development_test_target(db_url)
+        require_disposable_target(db_url)
+
+    # Validate argument bounds
+    validate_worker_args(args)
+
+    from src.engine.orchestration.worker import StrategyEvaluationWorker
+    worker = StrategyEvaluationWorker(
         worker_id=args.worker_id,
         batch_size=args.batch_size,
         lease_duration_seconds=args.lease_duration,
@@ -199,6 +273,15 @@ def main():
     worker_p.add_argument("--worker-id", default=None, help="Explicit worker ID identifier")
     worker_p.add_argument("--max-runs", type=int, default=None, help="Maximum worker loop iterations (for testing)")
     worker_p.set_defaults(func=cmd_sandbox_worker)
+
+    # strategy-evaluation-worker
+    orch_worker_p = subparsers.add_parser("strategy-evaluation-worker", help="Run the Strategy Orchestration fixture replay evaluation worker")
+    orch_worker_p.add_argument("--batch-size", type=int, default=10, help="Batch size for claiming orchestration runtimes")
+    orch_worker_p.add_argument("--lease-duration", type=int, default=30, help="Lease duration in seconds")
+    orch_worker_p.add_argument("--poll-interval", type=float, default=1.0, help="Poll interval in seconds")
+    orch_worker_p.add_argument("--worker-id", default=None, help="Explicit worker ID identifier")
+    orch_worker_p.add_argument("--max-runs", type=int, default=None, help="Maximum worker loop iterations (for testing)")
+    orch_worker_p.set_defaults(func=cmd_evaluation_worker)
 
     # users group
     users_parser = subparsers.add_parser("users", help="User administration commands")

@@ -53,12 +53,16 @@ print('IMPORT_OK')
 def test_local_startup_fails_without_mutation(tmp_path, state):
     target = tmp_path / "local.db"
     if state != "absent_file":
-        with sqlite3.connect(target) as conn:
+        conn = sqlite3.connect(target)
+        try:
             if state == "missing_version":
                 conn.execute("CREATE TABLE marker (id INTEGER PRIMARY KEY)")
             elif state == "outdated":
                 conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)")
                 conn.execute("INSERT INTO alembic_version VALUES ('0004_paper_runtime')")
+            conn.commit()
+        finally:
+            conn.close()
     before = evidence(target)
     result = run("""
 from fastapi.testclient import TestClient
@@ -126,9 +130,12 @@ with TestClient(app) as client:
 """, target)
     assert result.returncode == 0, result.stderr
     assert evidence(target) == before
-    with sqlite3.connect(target.as_uri() + '?mode=ro', uri=True) as conn:
+    conn = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
+    try:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0005_upstox_sandbox"
         assert not conn.execute("SELECT name FROM sqlite_master WHERE name='runtime_orchestration_configs'").fetchall()
+    finally:
+        conn.close()
 
 
 def test_disposable_schema_guard_rejects_repository_targets():

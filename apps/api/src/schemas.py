@@ -572,3 +572,39 @@ class OrchestrationReadinessResponse(BaseModel):
     ready: bool
     reasons: List[str]
     gates: Dict[str, bool]
+
+
+# --- Milestone 6C Phase 3 Evaluation Schemas ---
+
+class RuntimeEvaluationSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    runtime_id: str
+    config_id: str
+    snapshot_fingerprint: str
+    evaluation_fingerprint: str
+    timeframe: str
+    close_at: datetime.datetime
+    reference_candle_id: str
+    subject_candle_id: Optional[str] = None
+    evaluation_status: str
+    action_outcome: str
+    risk_outcome: str
+    no_order_reason: Optional[str] = None
+    finalized_at: datetime.datetime
+
+
+class RuntimeEvaluationDetailResponse(RuntimeEvaluationSummaryResponse):
+    model_config = ConfigDict(extra="forbid")
+    required_candles_json: str
+    audit_json: str
+    risk_summary_json: str
+
+
+class EvaluationHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runtime_id: str
+    total: int
+    limit: int
+    offset: int
+    evaluations: List[RuntimeEvaluationSummaryResponse]

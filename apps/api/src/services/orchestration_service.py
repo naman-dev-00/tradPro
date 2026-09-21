@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -56,6 +56,7 @@ from src.models import (
     PaperAccount,
     ProviderInstrumentMapping,
     RiskPolicy,
+    RuntimeEvaluation,
     RuntimeEvent,
     RuntimeOrchestrationConfig,
     Strategy,
@@ -97,11 +98,14 @@ class OrchestrationService:
             raise PermissionDeniedError("Disabled legacy principal cannot perform orchestration actions.")
 
     @staticmethod
-    def _get_owned_runtime(db: Session, runtime_id: str, owner_id: str) -> StrategyRuntime:
-        runtime = db.query(StrategyRuntime).filter(
+    def _get_owned_runtime(db: Session, runtime_id: str, owner_id: str, for_update: bool = False) -> StrategyRuntime:
+        query = db.query(StrategyRuntime).filter(
             StrategyRuntime.id == runtime_id,
             StrategyRuntime.owner_id == owner_id,
-        ).first()
+        )
+        if for_update:
+            query = query.with_for_update()
+        runtime = query.first()
         if not runtime:
             raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
         return runtime
@@ -488,10 +492,14 @@ class OrchestrationService:
             status_valid = (runtime.status == RuntimeStatus.READY.value)
             if not status_valid:
                 reasons.append(f"Runtime status is '{runtime.status}' (must be READY to activate)")
-        else:
-            status_valid = (runtime.status in (RuntimeStatus.READY.value, RuntimeStatus.PAUSED.value))
+        elif target_action == "EXECUTE":
+            status_valid = (runtime.status == RuntimeStatus.RUNNING.value)
             if not status_valid:
-                reasons.append(f"Runtime status is '{runtime.status}' (must be READY or PAUSED)")
+                reasons.append(f"Runtime status is '{runtime.status}' (must be RUNNING to execute)")
+        else:
+            status_valid = (runtime.status in (RuntimeStatus.READY.value, RuntimeStatus.PAUSED.value, RuntimeStatus.RUNNING.value))
+            if not status_valid:
+                reasons.append(f"Runtime status is '{runtime.status}' (must be READY, PAUSED, or RUNNING)")
         gates["status_gate"] = status_valid
 
         all_ready = len(reasons) == 0 and all(gates.values())
@@ -725,7 +733,7 @@ class OrchestrationService:
         """Pause orchestration evaluations. Does NOT cancel open orders or release reservations."""
         user = db.query(User).filter(User.id == owner_id).first()
         OrchestrationService._verify_active_owner(user)
-        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id, for_update=True)
 
         curr_status = RuntimeStatus(runtime.status)
         if curr_status == RuntimeStatus.PAUSED:
@@ -742,6 +750,18 @@ class OrchestrationService:
             raise ConflictError(f"Cannot pause runtime in '{curr_status.value}' status. Must be RUNNING.")
 
         validate_runtime_transition(curr_status, RuntimeStatus.PAUSED, actor=actor_id, reason_code="ORCHESTRATION_PAUSED")
+
+        # Clear lease and bump fencing generation to revoke existing worker leases
+        config = db.query(RuntimeOrchestrationConfig).filter(
+            RuntimeOrchestrationConfig.runtime_id == runtime_id,
+            RuntimeOrchestrationConfig.owner_id == owner_id,
+        ).with_for_update().first()
+        if config:
+            config.lease_owner = None
+            config.lease_expires_at = None
+            config.fencing_generation = config.fencing_generation + 1
+            config.last_reason_code = "ORCHESTRATION_PAUSED"
+            config.updated_at = datetime.datetime.now(datetime.timezone.utc)
 
         updated = OrchestrationService._execute_atomic_status_update(
             db=db,
@@ -765,7 +785,7 @@ class OrchestrationService:
         """Resume orchestration. Revalidates ALL prerequisites again (kill switches, mapping expiry, etc.)."""
         user = db.query(User).filter(User.id == owner_id).first()
         OrchestrationService._verify_active_owner(user)
-        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id, for_update=True)
 
         curr_status = RuntimeStatus(runtime.status)
         if curr_status == RuntimeStatus.RUNNING:
@@ -791,7 +811,7 @@ class OrchestrationService:
         config = db.query(RuntimeOrchestrationConfig).filter(
             RuntimeOrchestrationConfig.runtime_id == runtime_id,
             RuntimeOrchestrationConfig.owner_id == owner_id,
-        ).first()
+        ).with_for_update().first()
         if not config:
             raise ResourceNotFoundError(f"Configuration for runtime '{runtime_id}' not found.")
         assert_orchestration_execution_is_internal_only(config)
@@ -805,6 +825,15 @@ class OrchestrationService:
             actor=actor_id,
             reason_code="ORCHESTRATION_RESUMED",
         )
+
+        # Explicit operator recovery from quarantine on resume; bump fencing generation to revoke prior leases
+        now_ts = datetime.datetime.now(datetime.timezone.utc)
+        config.retry_count = 0
+        config.next_attempt_at = now_ts
+        config.fencing_generation = config.fencing_generation + 1
+        config.last_reason_code = "ORCHESTRATION_RESUMED"
+        config.updated_at = now_ts
+        db.flush()
 
         return {
             "runtime_id": updated.id,
@@ -820,7 +849,7 @@ class OrchestrationService:
         """Permanently stop orchestration. Does NOT cancel open orders or release reservations."""
         user = db.query(User).filter(User.id == owner_id).first()
         OrchestrationService._verify_active_owner(user)
-        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id, for_update=True)
 
         curr_status = RuntimeStatus(runtime.status)
         if curr_status == RuntimeStatus.STOPPED:
@@ -839,6 +868,18 @@ class OrchestrationService:
 
         validate_runtime_transition(curr_status, RuntimeStatus.STOPPED, actor=actor_id, reason_code="ORCHESTRATION_STOPPED")
 
+        # Clear lease and bump fencing generation to revoke existing worker leases
+        config = db.query(RuntimeOrchestrationConfig).filter(
+            RuntimeOrchestrationConfig.runtime_id == runtime_id,
+            RuntimeOrchestrationConfig.owner_id == owner_id,
+        ).with_for_update().first()
+        if config:
+            config.lease_owner = None
+            config.lease_expires_at = None
+            config.fencing_generation = config.fencing_generation + 1
+            config.last_reason_code = "ORCHESTRATION_STOPPED"
+            config.updated_at = datetime.datetime.now(datetime.timezone.utc)
+
         updated = OrchestrationService._execute_atomic_status_update(
             db=db,
             runtime=runtime,
@@ -855,3 +896,74 @@ class OrchestrationService:
             "message": "Orchestration permanently stopped. Existing orders, outbox, and audit history preserved.",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
+
+    @staticmethod
+    def list_evaluations(
+        db: Session,
+        runtime_id: str,
+        owner_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[RuntimeEvaluation], int]:
+        """List evaluations for an owned runtime with bounded pagination and deterministic ordering."""
+        OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        bounded_limit = max(1, min(limit, 100))
+        bounded_offset = max(0, offset)
+
+        query = db.query(RuntimeEvaluation).filter(
+            RuntimeEvaluation.runtime_id == runtime_id,
+            RuntimeEvaluation.owner_id == owner_id,
+        )
+        total = query.count()
+        evaluations = (
+            query.order_by(
+                RuntimeEvaluation.close_at.desc(),
+                RuntimeEvaluation.id.desc(),
+            )
+            .offset(bounded_offset)
+            .limit(bounded_limit)
+            .all()
+        )
+        return evaluations, total
+
+    @staticmethod
+    def get_evaluation(
+        db: Session,
+        runtime_id: str,
+        evaluation_id: str,
+        owner_id: str,
+    ) -> RuntimeEvaluation:
+        """Retrieve a specific evaluation with owner-scoped 404 isolation."""
+        OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        evaluation = db.query(RuntimeEvaluation).filter(
+            RuntimeEvaluation.id == evaluation_id,
+            RuntimeEvaluation.runtime_id == runtime_id,
+            RuntimeEvaluation.owner_id == owner_id,
+        ).first()
+        if not evaluation:
+            raise ResourceNotFoundError(f"Evaluation '{evaluation_id}' not found.")
+        return evaluation
+
+    @staticmethod
+    def get_latest_evaluation(
+        db: Session,
+        runtime_id: str,
+        owner_id: str,
+    ) -> RuntimeEvaluation:
+        """Retrieve the latest finalized evaluation for an owned runtime."""
+        OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        evaluation = (
+            db.query(RuntimeEvaluation)
+            .filter(
+                RuntimeEvaluation.runtime_id == runtime_id,
+                RuntimeEvaluation.owner_id == owner_id,
+            )
+            .order_by(
+                RuntimeEvaluation.close_at.desc(),
+                RuntimeEvaluation.id.desc(),
+            )
+            .first()
+        )
+        if not evaluation:
+            raise ResourceNotFoundError(f"No evaluations found for runtime '{runtime_id}'.")
+        return evaluation

@@ -47,6 +47,7 @@ test.describe("Accessibility (Axe-Core & Behavioral) E2E", () => {
 
   test("Keyboard-only login flow operates without mouse", async ({ page }) => {
     await page.goto("/login");
+    await page.getByRole("textbox", { name: "Username or Email" }).waitFor({ state: "visible" });
 
     // Tab into username
     await page.keyboard.press("Tab"); // Skip link
