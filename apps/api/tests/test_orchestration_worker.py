@@ -1643,9 +1643,12 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         assert engine.dialect.name == "postgresql"
         SessionCls = sessionmaker(bind=engine)
         with SessionCls() as session:
-            worker = StrategyEvaluationWorker(session, worker_id="pg_worker_1", batch_size=5)
+            user = make_test_user(session, "pg_worker_usr_1")
+            runtime, config, _ = setup_orchestration_stack(session, user)
+            session.commit()
+            worker = StrategyEvaluationWorker(worker_id="pg_worker_1", batch_size=5)
             # Candidate claiming uses dialect-appropriate row locking
-            claimed = worker.claim_next_candidate()
+            claimed = worker.claim_next_candidate(session)
             assert claimed is None or isinstance(claimed, tuple)
 
     def test_postgres_row_locking_skip_locked_claim(self):
@@ -1676,12 +1679,15 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         engine = create_engine(db_url)
         SessionCls = sessionmaker(bind=engine)
 
-        # Worker race barrier test
-        results = []
+        with SessionCls() as session:
+            user = make_test_user(session, "pg_w_race_usr")
+            runtime, config, _ = setup_orchestration_stack(session, user)
+            session.commit()
+
         def _attempt_claim(worker_id):
             with SessionCls() as s:
-                w = StrategyEvaluationWorker(s, worker_id=worker_id, batch_size=1)
-                return w.claim_next_candidate()
+                w = StrategyEvaluationWorker(worker_id=worker_id, batch_size=1)
+                return w.claim_next_candidate(s)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
             f1 = ex.submit(_attempt_claim, "pg_w_race_1")
@@ -1690,7 +1696,7 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
             r2 = f2.result()
             # If a candidate existed, at most one acquired it
             if r1 is not None and r2 is not None:
-                assert r1[0].id != r2[0].id or r1[1] != r2[1]
+                assert r1[0] != r2[0] or r1[1] != r2[1]
 
     def test_postgres_monotonic_fencing_generation(self):
         """Verify fencing generation increments monotonically on PostgreSQL."""
@@ -1702,10 +1708,11 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         with SessionCls() as session:
             user = make_test_user(session, "pg_fence_usr")
             runtime, config, _ = setup_orchestration_stack(session, user)
+            session.commit()
             initial_gen = config.fencing_generation
-            worker = StrategyEvaluationWorker(session, worker_id="pg_fencer", batch_size=1)
-            claimed = worker.claim_next_candidate()
-            if claimed and claimed[0].id == config.id:
+            worker = StrategyEvaluationWorker(worker_id="pg_fencer", batch_size=1)
+            claimed = worker.claim_next_candidate(session)
+            if claimed and claimed[0] == config.id:
                 assert claimed[1] == initial_gen + 1
 
     def test_postgres_stale_fence_rejection(self):
@@ -1718,18 +1725,19 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         with SessionCls() as session:
             user = make_test_user(session, "pg_stale_usr")
             runtime, config, _ = setup_orchestration_stack(session, user)
-            worker = StrategyEvaluationWorker(session, worker_id="pg_stale_w", batch_size=1)
-            # Simulating stale worker by finalizing with an obsolete fencing generation
+            session.commit()
+            worker = StrategyEvaluationWorker(worker_id="pg_stale_w", batch_size=1)
             stale_gen = config.fencing_generation - 1
             now = datetime.datetime.now(datetime.timezone.utc)
             with pytest.raises(StaleWorkerFencedError):
                 worker._fenced_finalize_step(
-                    config=config,
-                    runtime=runtime,
-                    claimed_generation=stale_gen,
-                    boundary_close_at=now,
-                    evaluation_record=None,
-                    prior_checkpoint=config.checkpoint_close_at,
+                    session,
+                    config,
+                    runtime,
+                    None,
+                    now,
+                    stale_gen,
+                    now,
                 )
 
     def test_postgres_racing_finalization_fenced(self):
@@ -1742,17 +1750,20 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         with SessionCls() as session:
             user = make_test_user(session, "pg_race_fin")
             runtime, config, _ = setup_orchestration_stack(session, user)
-            worker1 = StrategyEvaluationWorker(session, worker_id="pg_w_fin1", batch_size=1)
-            worker2 = StrategyEvaluationWorker(session, worker_id="pg_w_fin2", batch_size=1)
+            session.commit()
+            worker1 = StrategyEvaluationWorker(worker_id="pg_w_fin1", batch_size=1)
+            worker2 = StrategyEvaluationWorker(worker_id="pg_w_fin2", batch_size=1)
+            now = datetime.datetime.now(datetime.timezone.utc)
             # Only the worker matching lease_owner and generation can finalize
             with pytest.raises(StaleWorkerFencedError):
                 worker2._fenced_finalize_step(
-                    config=config,
-                    runtime=runtime,
-                    claimed_generation=config.fencing_generation + 99,
-                    boundary_close_at=datetime.datetime.now(datetime.timezone.utc),
-                    evaluation_record=None,
-                    prior_checkpoint=config.checkpoint_close_at,
+                    session,
+                    config,
+                    runtime,
+                    None,
+                    now,
+                    config.fencing_generation + 99,
+                    now,
                 )
 
     def test_postgres_exactly_one_runtime_evaluation(self):
@@ -1765,9 +1776,10 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         with SessionCls() as session:
             user = make_test_user(session, "pg_uniq_eval")
             runtime, config, _ = setup_orchestration_stack(session, user)
-            snapshot = OrchestrationSnapshot.model_validate_json(config.snapshot_json)
+            session.commit()
             # Ingest candle
             candle_events = ingest_all_required_fixture_candles(session, config)
+            session.commit()
             ref_candle = candle_events["synthetic_underlying_nifty_15m"][0]
             eval_id1 = str(uuid.uuid4())
             eval_id2 = str(uuid.uuid4())
@@ -1777,13 +1789,19 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
                 owner_id=user.id,
                 runtime_id=runtime.id,
                 config_id=config.id,
+                snapshot_fingerprint=config.snapshot_fingerprint,
                 evaluation_fingerprint="f" * 64,
-                interval_boundary_at=ref_candle.close_at,
+                timeframe="15m",
+                close_at=ref_candle.close_at,
                 reference_candle_id=ref_candle.id,
-                action_outcome=ActionOutcome.NO_ACTION.value,
-                risk_outcome=RiskOutcome.NOT_RUN.value,
-                evaluated_at=now,
-                created_at=now,
+                required_candles_json="{}",
+                evaluation_status="TRUE",
+                action_outcome="NO_ACTION",
+                risk_outcome="NOT_RUN",
+                no_order_reason="NONE",
+                audit_json="{}",
+                risk_summary_json="{}",
+                finalized_at=now,
             )
             session.add(ev1)
             session.flush()
@@ -1794,13 +1812,19 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
                 owner_id=user.id,
                 runtime_id=runtime.id,
                 config_id=config.id,
+                snapshot_fingerprint=config.snapshot_fingerprint,
                 evaluation_fingerprint="e" * 64,
-                interval_boundary_at=ref_candle.close_at,
+                timeframe="15m",
+                close_at=ref_candle.close_at,
                 reference_candle_id=ref_candle.id,
-                action_outcome=ActionOutcome.NO_ACTION.value,
-                risk_outcome=RiskOutcome.NOT_RUN.value,
-                evaluated_at=now,
-                created_at=now,
+                required_candles_json="{}",
+                evaluation_status="TRUE",
+                action_outcome="NO_ACTION",
+                risk_outcome="NOT_RUN",
+                no_order_reason="NONE",
+                audit_json="{}",
+                risk_summary_json="{}",
+                finalized_at=now,
             )
             session.add(ev2)
             with pytest.raises(Exception) as exc:
@@ -1818,13 +1842,16 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         with SessionCls() as session:
             user = make_test_user(session, "pg_atomic_usr")
             runtime, config, _ = setup_orchestration_stack(session, user)
-            worker = StrategyEvaluationWorker(session, worker_id="pg_atom_w", batch_size=1)
-            # Run one cycle; verify checkpoint updated together with evaluation row
-            worker.run_cycle()
-            session.refresh(config)
-            eval_count = session.query(RuntimeEvaluation).filter_by(config_id=config.id).count()
-            if eval_count > 0:
-                assert config.checkpoint_close_at is not None
+            boundary = OPEN_TIME + datetime.timedelta(minutes=15)
+            ingest_all_required_fixture_candles(session, config, up_to_close_at=boundary)
+            session.commit()
+            worker = StrategyEvaluationWorker(worker_id="pg_atom_w", batch_size=1)
+            claim = worker.claim_next_candidate(session)
+            if claim:
+                eval_res = worker.process_runtime_step(session, claim[0], claim[1])
+                assert eval_res is not None
+                session.refresh(config)
+                assert config.checkpoint_close_at == boundary
 
     def test_postgres_completion_transition_concurrency(self):
         """Verify that completion state transition on final boundary commits atomically on PostgreSQL."""
@@ -1835,17 +1862,22 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
         SessionCls = sessionmaker(bind=engine)
         with SessionCls() as session:
             user = make_test_user(session, "pg_comp_usr")
-            runtime, config, _ = setup_orchestration_stack(session, user)
-            # Set checkpoint to one interval before replay_close_at
-            snapshot = OrchestrationSnapshot.model_validate_json(config.snapshot_json)
-            config.checkpoint_close_at = snapshot.replay_close_at - datetime.timedelta(minutes=15)
+            r_open = OPEN_TIME
+            r_close = OPEN_TIME + datetime.timedelta(minutes=15)
+            runtime, config, _ = setup_orchestration_stack(
+                session, user, status="RUNNING", replay_open=r_open, replay_close=r_close
+            )
+            ingest_all_required_fixture_candles(session, config, up_to_close_at=r_close)
             session.commit()
-            worker = StrategyEvaluationWorker(session, worker_id="pg_comp_w", batch_size=1)
-            worker.run_cycle()
+            worker = StrategyEvaluationWorker(worker_id="pg_comp_w", batch_size=1)
+            claim = worker.claim_next_candidate(session)
+            assert claim is not None
+            eval_res = worker.process_runtime_step(session, claim[0], claim[1])
+            assert eval_res is not None
             session.refresh(runtime)
             session.refresh(config)
-            if config.checkpoint_close_at == snapshot.replay_close_at:
-                assert runtime.status == "COMPLETED"
+            assert config.checkpoint_close_at == r_close
+            assert runtime.status == RuntimeStatus.COMPLETED.value
 
     def test_postgres_owner_consistent_fk_enforcement(self):
         """Verify that compound FK fk_orch_eval_reference rejects cross-owner candles on PostgreSQL."""
@@ -1859,8 +1891,10 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
             user2 = make_test_user(session, "pg_owner_2")
             runtime1, config1, _ = setup_orchestration_stack(session, user1)
             runtime2, config2, _ = setup_orchestration_stack(session, user2)
+            session.commit()
             # Ingest candle for runtime2
             candle_events = ingest_all_required_fixture_candles(session, config2)
+            session.commit()
             candle_r2 = candle_events["synthetic_underlying_nifty_15m"][0]
 
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -1870,13 +1904,19 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
                 owner_id=user1.id,
                 runtime_id=runtime1.id,
                 config_id=config1.id,
+                snapshot_fingerprint=config1.snapshot_fingerprint,
                 evaluation_fingerprint="a" * 64,
-                interval_boundary_at=candle_r2.close_at,
+                timeframe="15m",
+                close_at=candle_r2.close_at,
                 reference_candle_id=candle_r2.id,  # Belongs to runtime2 / user2!
-                action_outcome=ActionOutcome.NO_ACTION.value,
-                risk_outcome=RiskOutcome.NOT_RUN.value,
-                evaluated_at=now,
-                created_at=now,
+                required_candles_json="{}",
+                evaluation_status="TRUE",
+                action_outcome="NO_ACTION",
+                risk_outcome="NOT_RUN",
+                no_order_reason="NONE",
+                audit_json="{}",
+                risk_summary_json="{}",
+                finalized_at=now,
             )
             session.add(bad_eval)
             with pytest.raises(Exception) as exc:
