@@ -1784,6 +1784,16 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
             eval_id1 = str(uuid.uuid4())
             eval_id2 = str(uuid.uuid4())
             now = datetime.datetime.now(datetime.timezone.utc)
+            req_candles = canonical_json([
+                {
+                    "series_role": "REFERENCE",
+                    "dataset_id": ref_candle.dataset_id,
+                    "instrument_id": ref_candle.instrument_id,
+                    "content_fingerprint": ref_candle.content_fingerprint,
+                }
+            ])
+            audit = canonical_json({"result": "TRUE", "condition_ids": ["c1"]})
+            risk_sum = canonical_json({"outcome": "NOT_RUN", "reason_codes": ["NONE"]})
             ev1 = RuntimeEvaluation(
                 id=eval_id1,
                 owner_id=user.id,
@@ -1794,13 +1804,13 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
                 timeframe="15m",
                 close_at=ref_candle.close_at,
                 reference_candle_id=ref_candle.id,
-                required_candles_json="{}",
+                required_candles_json=req_candles,
                 evaluation_status="TRUE",
                 action_outcome="NO_ACTION",
                 risk_outcome="NOT_RUN",
                 no_order_reason="NONE",
-                audit_json="{}",
-                risk_summary_json="{}",
+                audit_json=audit,
+                risk_summary_json=risk_sum,
                 finalized_at=now,
             )
             session.add(ev1)
@@ -1817,13 +1827,13 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
                 timeframe="15m",
                 close_at=ref_candle.close_at,
                 reference_candle_id=ref_candle.id,
-                required_candles_json="{}",
+                required_candles_json=req_candles,
                 evaluation_status="TRUE",
                 action_outcome="NO_ACTION",
                 risk_outcome="NOT_RUN",
                 no_order_reason="NONE",
-                audit_json="{}",
-                risk_summary_json="{}",
+                audit_json=audit,
+                risk_summary_json=risk_sum,
                 finalized_at=now,
             )
             session.add(ev2)
@@ -1846,12 +1856,10 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
             ingest_all_required_fixture_candles(session, config, up_to_close_at=boundary)
             session.commit()
             worker = StrategyEvaluationWorker(worker_id="pg_atom_w", batch_size=1)
-            claim = worker.claim_next_candidate(session)
-            if claim:
-                eval_res = worker.process_runtime_step(session, claim[0], claim[1])
-                assert eval_res is not None
-                session.refresh(config)
-                assert config.checkpoint_close_at == boundary
+            eval_res = worker.evaluate_candidate(session, config.id)
+            assert eval_res is not None
+            session.refresh(config)
+            assert config.checkpoint_close_at == boundary
 
     def test_postgres_completion_transition_concurrency(self):
         """Verify that completion state transition on final boundary commits atomically on PostgreSQL."""
@@ -1870,9 +1878,7 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
             ingest_all_required_fixture_candles(session, config, up_to_close_at=r_close)
             session.commit()
             worker = StrategyEvaluationWorker(worker_id="pg_comp_w", batch_size=1)
-            claim = worker.claim_next_candidate(session)
-            assert claim is not None
-            eval_res = worker.process_runtime_step(session, claim[0], claim[1])
+            eval_res = worker.evaluate_candidate(session, config.id)
             assert eval_res is not None
             session.refresh(runtime)
             session.refresh(config)
@@ -1898,6 +1904,16 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
             candle_r2 = candle_events["synthetic_underlying_nifty_15m"][0]
 
             now = datetime.datetime.now(datetime.timezone.utc)
+            req_candles_bad = canonical_json([
+                {
+                    "series_role": "REFERENCE",
+                    "dataset_id": candle_r2.dataset_id,
+                    "instrument_id": candle_r2.instrument_id,
+                    "content_fingerprint": candle_r2.content_fingerprint,
+                }
+            ])
+            audit = canonical_json({"result": "TRUE", "condition_ids": ["c1"]})
+            risk_sum = canonical_json({"outcome": "NOT_RUN", "reason_codes": ["NONE"]})
             # Attempt to create an evaluation for runtime1 referencing runtime2's candle
             bad_eval = RuntimeEvaluation(
                 id=str(uuid.uuid4()),
@@ -1909,13 +1925,13 @@ class TestPhase3PostgreSQLConcurrencyAndSafety:
                 timeframe="15m",
                 close_at=candle_r2.close_at,
                 reference_candle_id=candle_r2.id,  # Belongs to runtime2 / user2!
-                required_candles_json="{}",
+                required_candles_json=req_candles_bad,
                 evaluation_status="TRUE",
                 action_outcome="NO_ACTION",
                 risk_outcome="NOT_RUN",
                 no_order_reason="NONE",
-                audit_json="{}",
-                risk_summary_json="{}",
+                audit_json=audit,
+                risk_summary_json=risk_sum,
                 finalized_at=now,
             )
             session.add(bad_eval)
