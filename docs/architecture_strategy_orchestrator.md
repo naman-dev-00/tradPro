@@ -245,3 +245,53 @@ The development database must retain its SHA-256, size and mtime throughout chec
 * Implement bounded ingestion, ordering/missing-interval policy, leases/fencing,
   evaluator integration, transactional auditing and internal/mock execution.
 * Add activation/evaluation APIs and Paper Trading Lab UI only in later phases.
+
+---
+
+# Strategy Orchestration: Milestone 6C, Phase 3 — Evaluation Worker
+
+Phase 3 implements the deterministic Strategy Evaluation Worker (`StrategyEvaluationWorker`), candle ingestion engine, required-series synchronization, rule & pre-intent risk evaluation, atomic checkpoint advancement, and read-only evaluation APIs.
+
+## 1. Worker Lifecycle and Concurrency Model
+
+The worker is designed for bounded, safe, crash-resilient execution:
+- **Claim**: Queries RUNNING orchestration configs with available leases (`lease_owner IS NULL` or `lease_expires_at <= now`), bounded by `batch_size`.
+- **Atomic Lease Acquisition**: Executes conditional SQL update advancing `fencing_generation = cand_gen + 1`, setting `lease_owner = worker_id`, and `lease_expires_at = now + lease_duration`.
+- **Read & Ingestion**: Ingests fixture candles idempotently up to the target evaluation boundary.
+- **Compute (Pure & Detached)**: Evaluates strategy rules and pre-intent risk limits without holding long-lived DB transactions.
+- **Fenced-Finalize**: In a single atomic transaction:
+  1. Checks for winning idempotent evaluation (`evaluation_fingerprint`) or conflict at boundary.
+  2. Inserts immutable `RuntimeEvaluation`.
+  3. Advances `checkpoint_close_at = boundary` and releases the lease, guarded by `WHERE fencing_generation = acquired_gen`.
+  4. If boundary reaches `replay_close_at`, transitions runtime to `COMPLETED`.
+
+## 2. Checkpoint Semantics and Atomicity
+
+- `checkpoint_close_at` monotonically advances interval-by-interval (`+ timeframe_seconds`).
+- Checkpoint advancement and `RuntimeEvaluation` insertion commit in the exact same transaction.
+- If evaluation fails, crashes, or is fenced out, the checkpoint does NOT advance.
+- On resume, evaluation begins strictly at `checkpoint_close_at + timeframe_seconds`.
+- Stale workers whose lease expired cannot finalize: `UPDATE ... WHERE fencing_generation = acquired_gen` returns 0 rows, triggering `StaleWorkerFencedError` and transaction rollback.
+
+## 3. Deterministic Required-Series Synchronization & No-Look-Ahead
+
+- All series required by the frozen snapshot (REFERENCE and optional SUBJECT) must have exactly one completed candle at the boundary close time.
+- If any required series is missing at boundary, the worker raises `SynchronizationError` and releases the lease with backoff; it NEVER forward-fills or substitutes datasets.
+- **No-Look-Ahead Rule**: Historical candles are loaded strictly with `close_at <= boundary`. Candles closing after boundary are never visible to indicators.
+- Identical canonical inputs produce byte-equivalent evidence and the exact same `runtime_evaluation_v1` fingerprint.
+
+## 4. Strict Transmission Prohibition
+
+- Every processing step invokes `assert_orchestration_execution_is_internal_only(config)`.
+- For `FIXTURE_REPLAY` and `INTERNAL_MOCK_ONLY`:
+  - Zero calls to Upstox API adapters.
+  - Zero HTTP provider network calls.
+  - Zero rows inserted into `submission_outbox`.
+  - Zero broker orders created.
+  - Hypothetical actions are persisted strictly as internal evaluation evidence (`audit_json`, `risk_summary_json`).
+
+## 5. Remaining Exclusions (Phase 4 / Live Provider)
+
+- Live-market WebSocket/REST streaming ingestion is excluded.
+- Real Upstox order transmission from automated evaluation is prohibited.
+- Automated ledger mutations, balance reservations, and order fills from evaluations remain deferred.
