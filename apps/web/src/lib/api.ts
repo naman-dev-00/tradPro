@@ -1631,3 +1631,105 @@ export async function fetchEvaluationDetail(
   }
   return res.json();
 }
+
+// --- Phase 5: Provider Market Data Interfaces & API Functions ---
+
+export interface MarketDataCandle {
+  timestamp: string;
+  open: string | number;
+  high: string | number;
+  low: string | number;
+  close: string | number;
+  open_units: number;
+  high_units: number;
+  low_units: number;
+  close_units: number;
+  volume: number;
+  is_closed: boolean;
+}
+
+export interface MarketDataProvenance {
+  provider: string;
+  source_type: string;
+  retrieved_at: string;
+  requested_instrument_key: string;
+  timeframe: string;
+  mode: "intraday" | "historical";
+  date_range?: { from_date: string; to_date: string } | null;
+  candle_count: number;
+  content_fingerprint: string;
+  completeness: "COMPLETE" | "INCOMPLETE" | "UNKNOWN";
+  is_complete_series: boolean;
+  warnings: string[];
+}
+
+export interface MarketDataInstrument {
+  instrument_key: string;
+  tradepro_instrument_id: string;
+  name: string;
+  exchange: string;
+  segment: string;
+  lot_size: number;
+  tick_size: string | number;
+  supported_timeframes: string[];
+}
+
+export interface MarketDataReadinessResponse {
+  network_enabled: boolean;
+  credential_configured: boolean;
+  operator_configured: boolean;
+  is_authorized_operator: boolean;
+  status: "CONFIGURED_AND_ENABLED" | "NETWORK_DISABLED" | "CREDENTIALS_MISSING" | "FORBIDDEN_OPERATOR" | "OPERATOR_NOT_CONFIGURED" | "INVALID_ENDPOINT_CONFIGURATION";
+  base_url: string;
+  approved_hosts: string[];
+  supported_timeframes: string[];
+}
+
+export interface MarketDataCandlesResponse {
+  instrument_key: string;
+  tradepro_instrument_id?: string | null;
+  timeframe: string;
+  mode: "intraday" | "historical";
+  candles: MarketDataCandle[];
+  provenance: MarketDataProvenance;
+}
+
+export async function fetchMarketDataReadiness(): Promise<MarketDataReadinessResponse> {
+  const res = await apiFetch("/api/v1/market-data/readiness");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch market data readiness");
+  }
+  return res.json();
+}
+
+export async function fetchMarketDataInstruments(): Promise<MarketDataInstrument[]> {
+  const res = await apiFetch("/api/v1/market-data/instruments");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch market data instruments");
+  }
+  return res.json();
+}
+
+export async function fetchMarketDataCandles(params: {
+  instrument_key: string;
+  timeframe?: string;
+  mode?: "intraday" | "historical";
+  from_date?: string;
+  to_date?: string;
+}): Promise<MarketDataCandlesResponse> {
+  const q = new URLSearchParams();
+  q.append("instrument_key", params.instrument_key);
+  if (params.timeframe) q.append("timeframe", params.timeframe);
+  if (params.mode) q.append("mode", params.mode);
+  if (params.from_date) q.append("from_date", params.from_date);
+  if (params.to_date) q.append("to_date", params.to_date);
+
+  const res = await apiFetch(`/api/v1/market-data/candles?${q.toString()}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to fetch candles (${res.status})`);
+  }
+  return res.json();
+}
