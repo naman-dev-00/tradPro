@@ -1,3 +1,4 @@
+import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from decimal import Decimal
 from datetime import datetime
@@ -134,7 +135,7 @@ class DeterministicFillEngine:
             # Generate stable fill idempotency key
             iso_ts = candle_timestamp.isoformat()
             stable_intent_key = order.get("intent_trigger_key") or order_id
-            fill_key = f"{stable_intent_key}:{iso_ts}:{new_filled_total}"
+            fill_key = hashlib.sha256(f"{stable_intent_key}:{iso_ts}:{new_filled_total}".encode("utf-8")).hexdigest()
 
             fills.append(
                 FillResult(
