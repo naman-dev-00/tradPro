@@ -103,7 +103,7 @@ class OrchestrationSnapshot(FrozenContract):
     engine_version: Identifier
     indicator_engine_version: Identifier
     orchestration_policy_version: Literal["1"] = "1"
-    execution_policy: Literal["INTERNAL_MOCK_ONLY"] = "INTERNAL_MOCK_ONLY"
+    execution_policy: Literal["INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"] = "INTERNAL_MOCK_ONLY"
     external_transmission_allowed: Literal[False] = False
 
     @field_validator("strategy_snapshot", "action_policy_snapshot", "risk_policy_snapshot", "instrument_specification", mode="before")

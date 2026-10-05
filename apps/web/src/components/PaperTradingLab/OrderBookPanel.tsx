@@ -18,7 +18,7 @@ export const OrderBookPanel: React.FC<Props> = ({
 }) => {
   const [tab, setTab] = useState<"ORDERS" | "FILLS">("ORDERS");
 
-  const openOrders = orders.filter((o) => o.status === "ACCEPTED" || o.status === "PARTIALLY_FILLED");
+  const openOrders = orders.filter((o) => o.status === "CREATED" || o.status === "ACCEPTED" || o.status === "PARTIALLY_FILLED");
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
@@ -71,7 +71,7 @@ export const OrderBookPanel: React.FC<Props> = ({
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {orders.map((o) => {
-                  const isOpen = o.status === "ACCEPTED" || o.status === "PARTIALLY_FILLED";
+                  const isOpen = o.status === "CREATED" || o.status === "ACCEPTED" || o.status === "PARTIALLY_FILLED";
                   return (
                     <tr key={o.id} className="hover:bg-slate-800/40 transition-colors">
                       <td className="py-2.5 px-3 font-mono">#{o.order_sequence_number}</td>

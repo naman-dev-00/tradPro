@@ -5,6 +5,7 @@ import { StrategyRuntime, KillSwitchStatus, SandboxReadinessResponse } from "../
 
 interface Props {
   runtime: StrategyRuntime | null;
+  orchestrated?: boolean;
   killSwitch: KillSwitchStatus | null;
   readiness?: SandboxReadinessResponse | null;
   onStart: () => void;
@@ -13,11 +14,14 @@ interface Props {
   onStop: () => void;
   onStep: (steps: number) => void;
   onOpenKillSwitch: () => void;
+  onOpenActivationModal?: () => void;
+  onOpenTimelineDrawer?: () => void;
   loading: boolean;
 }
 
 export const RuntimeControlHeader: React.FC<Props> = ({
   runtime,
+  orchestrated = false,
   killSwitch,
   readiness,
   onStart,
@@ -26,6 +30,8 @@ export const RuntimeControlHeader: React.FC<Props> = ({
   onStop,
   onStep,
   onOpenKillSwitch,
+  onOpenActivationModal,
+  onOpenTimelineDrawer,
   loading,
 }) => {
   const isKillSwitchActive = killSwitch?.global_active || killSwitch?.user_active;
@@ -157,14 +163,38 @@ export const RuntimeControlHeader: React.FC<Props> = ({
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {runtime?.status === "READY" && (
+          {(runtime?.status === "READY" || runtime?.status === "DRAFT") && onOpenActivationModal && (
+            <button
+              id="open-orchestration-modal-btn"
+              disabled={loading || submissionBlocked}
+              onClick={onOpenActivationModal}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold rounded transition-colors"
+            >
+              Activate Orchestration
+            </button>
+          )}
+
+          {runtime?.status === "READY" && !orchestrated && (
             <button
               id="start-runtime-btn"
               disabled={loading || submissionBlocked}
               onClick={onStart}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+              className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
             >
               Start
+            </button>
+          )}
+
+          {runtime && onOpenTimelineDrawer && (
+            <button
+              id="open-timeline-drawer-btn"
+              onClick={onOpenTimelineDrawer}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded transition-colors flex items-center gap-1.5"
+            >
+              <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Timeline
             </button>
           )}
 

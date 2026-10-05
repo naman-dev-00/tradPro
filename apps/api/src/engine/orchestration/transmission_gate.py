@@ -16,10 +16,10 @@ def external_transmission_allowed(source_type: str, execution_policy: str) -> bo
     """Return whether external transmission is permitted.
 
     Only approved source types and execution policies are evaluated.
-    FIXTURE_REPLAY + INTERNAL_MOCK_ONLY is structurally forbidden from transmitting.
+    FIXTURE_REPLAY + (INTERNAL_MOCK_ONLY | INTERNAL_PAPER) is structurally forbidden from transmitting.
     Unknown or unexpected combinations fail closed by raising ValueError.
     """
-    if source_type == "FIXTURE_REPLAY" and execution_policy == "INTERNAL_MOCK_ONLY":
+    if source_type == "FIXTURE_REPLAY" and execution_policy in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"):
         return False
 
     # Fail closed for all other or unknown combinations

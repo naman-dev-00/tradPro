@@ -17,6 +17,7 @@ import {
   pausePaperRuntime,
   resumePaperRuntime,
   stopPaperRuntime,
+  fetchOrchestrationConfig, pauseOrchestration, resumeOrchestration, stopOrchestration,
   stepPaperRuntime,
   fetchPaperOrders,
   cancelPaperOrder,
@@ -44,6 +45,8 @@ import { OrderBookPanel } from "./OrderBookPanel";
 import { AuditTimelineModal } from "./AuditTimelineModal";
 import { KillSwitchModal } from "./KillSwitchModal";
 import { SandboxOutboxPanel } from "./SandboxOutboxPanel";
+import { OrchestrationActivationModal } from "./OrchestrationActivationModal";
+import { OrchestrationTimelineDrawer } from "./OrchestrationTimelineDrawer";
 import { useAuth } from "@/context/AuthContext";
 
 export const PaperTradingLab: React.FC = () => {
@@ -54,6 +57,7 @@ export const PaperTradingLab: React.FC = () => {
 
   const [accounts, setAccounts] = useState<PaperAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [isOrchestrated, setIsOrchestrated] = useState(false);
   const [runtimes, setRuntimes] = useState<StrategyRuntime[]>([]);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState<string>("");
   const [positions, setPositions] = useState<PaperPosition[]>([]);
@@ -70,6 +74,8 @@ export const PaperTradingLab: React.FC = () => {
   const [isKillSwitchModalOpen, setIsKillSwitchModalOpen] = useState(false);
   const [isNewAccountModalOpen, setIsNewAccountModalOpen] = useState(false);
   const [isNewRuntimeModalOpen, setIsNewRuntimeModalOpen] = useState(false);
+  const [isOrchestrationModalOpen, setIsOrchestrationModalOpen] = useState(false);
+  const [isTimelineDrawerOpen, setIsTimelineDrawerOpen] = useState(false);
 
   // Form states
   const [newAccountName, setNewAccountName] = useState("");
@@ -94,6 +100,17 @@ export const PaperTradingLab: React.FC = () => {
   // Selected account & runtime objects
   const currentAccount = accounts.find((a) => a.id === selectedAccountId) || null;
   const currentRuntime = runtimes.find((r) => r.id === selectedRuntimeId) || null;
+
+  useEffect(() => {
+    let current = true;
+    setIsOrchestrated(false);
+    if (selectedRuntimeId) {
+      fetchOrchestrationConfig(selectedRuntimeId).then(config => {
+        if (current) setIsOrchestrated(config !== null);
+      }).catch(() => { if (current) setIsOrchestrated(true); });
+    }
+    return () => { current = false; };
+  }, [selectedRuntimeId, runtimes]);
 
   // Notification helper
   const showFeedback = (text: string, type: "success" | "error" | "info" = "info") => {
@@ -231,6 +248,10 @@ export const PaperTradingLab: React.FC = () => {
     if (!currentRuntime) return;
     try {
       setLoading(true);
+      if (await fetchOrchestrationConfig(currentRuntime.id)) {
+        setIsOrchestrationModalOpen(true);
+        return;
+      }
       const updated = await startPaperRuntime(currentRuntime.id);
       setRuntimes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       showFeedback(`Runtime '${updated.id.slice(0, 8)}' is now RUNNING.`, "success");
@@ -246,6 +267,13 @@ export const PaperTradingLab: React.FC = () => {
     if (!currentRuntime) return;
     try {
       setLoading(true);
+      if (await fetchOrchestrationConfig(currentRuntime.id)) {
+        await pauseOrchestration(currentRuntime.id);
+        setRuntimes(await fetchPaperRuntimes());
+        showFeedback("Orchestration pause completed. Open orders and reservations are preserved.", "info");
+        await refreshAccountData();
+        return;
+      }
       const updated = await pausePaperRuntime(currentRuntime.id);
       setRuntimes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       showFeedback(`Runtime '${updated.id.slice(0, 8)}' PAUSED.`, "info");
@@ -261,6 +289,13 @@ export const PaperTradingLab: React.FC = () => {
     if (!currentRuntime) return;
     try {
       setLoading(true);
+      if (await fetchOrchestrationConfig(currentRuntime.id)) {
+        await resumeOrchestration(currentRuntime.id);
+        setRuntimes(await fetchPaperRuntimes());
+        showFeedback("Orchestration resume completed. Open orders and reservations are preserved.", "info");
+        await refreshAccountData();
+        return;
+      }
       const updated = await resumePaperRuntime(currentRuntime.id);
       setRuntimes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       showFeedback(`Runtime '${updated.id.slice(0, 8)}' RESUMED.`, "success");
@@ -276,6 +311,13 @@ export const PaperTradingLab: React.FC = () => {
     if (!currentRuntime) return;
     try {
       setLoading(true);
+      if (await fetchOrchestrationConfig(currentRuntime.id)) {
+        await stopOrchestration(currentRuntime.id);
+        setRuntimes(await fetchPaperRuntimes());
+        showFeedback("Orchestration stop completed. Open orders and reservations are preserved.", "info");
+        await refreshAccountData();
+        return;
+      }
       const updated = await stopPaperRuntime(currentRuntime.id);
       setRuntimes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       showFeedback(`Runtime '${updated.id.slice(0, 8)}' STOPPED. Open orders cancelled.`, "info");
@@ -556,6 +598,7 @@ export const PaperTradingLab: React.FC = () => {
       {/* Runtime Control Header (Simulation Banner, Status, Stepper, Kill Switch Button) */}
       <RuntimeControlHeader
         runtime={currentRuntime}
+        orchestrated={isOrchestrated}
         killSwitch={killSwitch}
         readiness={sandboxReadiness}
         onStart={handleStartRuntime}
@@ -564,6 +607,8 @@ export const PaperTradingLab: React.FC = () => {
         onStop={handleStopRuntime}
         onStep={handleStepRuntime}
         onOpenKillSwitch={() => setIsKillSwitchModalOpen(true)}
+        onOpenActivationModal={() => setIsOrchestrationModalOpen(true)}
+        onOpenTimelineDrawer={() => setIsTimelineDrawerOpen(true)}
         loading={loading}
       />
 
@@ -646,6 +691,26 @@ export const PaperTradingLab: React.FC = () => {
           isAdmin={isAdmin}
         />
       )}
+
+      {/* Orchestration Activation Modal */}
+      {isOrchestrationModalOpen && currentRuntime && (
+        <OrchestrationActivationModal
+          runtimeId={currentRuntime.id}
+          isOpen={isOrchestrationModalOpen}
+          onClose={() => setIsOrchestrationModalOpen(false)}
+          onActivated={() => {
+            showFeedback("Orchestration activated successfully", "success");
+            loadInitialData();
+          }}
+        />
+      )}
+
+      {/* Orchestration Timeline Drawer */}
+      <OrchestrationTimelineDrawer
+        runtimeId={currentRuntime?.id || null}
+        isOpen={isTimelineDrawerOpen}
+        onClose={() => setIsTimelineDrawerOpen(false)}
+      />
 
 
       {/* Create Account Modal */}

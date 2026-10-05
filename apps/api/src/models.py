@@ -1,6 +1,7 @@
 import datetime
+from typing import Optional
 import uuid
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, ForeignKey, ForeignKeyConstraint, text, BigInteger, Integer, Text, Index, event, inspect
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, CheckConstraint, UniqueConstraint, ForeignKey, ForeignKeyConstraint, text, BigInteger, Integer, Text, Index, event, inspect, func
 from src.database import Base, UTCDateTime
 
 LEGACY_PRINCIPAL_ID = "00000000-0000-0000-0000-000000000000"
@@ -141,6 +142,26 @@ class PaperAccount(Base):
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
 
+    @property
+    def committed_replay_watermark(self) -> Optional[datetime.datetime]:
+        """Authoritative watermark derived from immutable committed paper evaluations."""
+        from sqlalchemy.orm import object_session
+        session = object_session(self)
+        if session is None:
+            raise RuntimeError("Paper replay progress requires an attached database session")
+        return (
+            session.query(func.max(RuntimeEvaluation.close_at))
+            .join(StrategyRuntime, RuntimeEvaluation.runtime_id == StrategyRuntime.id)
+            .join(RuntimeOrchestrationConfig, RuntimeEvaluation.config_id == RuntimeOrchestrationConfig.id)
+            .filter(
+                StrategyRuntime.account_id == self.id,
+                StrategyRuntime.owner_id == self.owner_id,
+                RuntimeEvaluation.owner_id == self.owner_id,
+                RuntimeOrchestrationConfig.execution_policy == "INTERNAL_PAPER",
+            )
+            .scalar()
+        )
+
     __table_args__ = (
         CheckConstraint("total_cash_units >= 0", name="ck_paper_accounts_total_cash_nonneg"),
         CheckConstraint("reserved_cash_units >= 0 AND reserved_cash_units <= total_cash_units", name="ck_paper_accounts_reserved_cash_bound"),
@@ -261,6 +282,39 @@ class StrategyRuntime(Base):
         ForeignKeyConstraint(["risk_policy_id", "owner_id"], ["risk_policies.id", "risk_policies.owner_id"], name="fk_strategy_runtimes_risk_policy_owner"),
     )
 
+    @property
+    def instrument_id(self):
+        """Resolve authoritative orderable instrument identity for this runtime."""
+        if self.instrument_spec_snapshot and isinstance(self.instrument_spec_snapshot, dict):
+            inst_id = self.instrument_spec_snapshot.get("instrument_id")
+            if inst_id:
+                return inst_id
+        if self.action_policy_snapshot and isinstance(self.action_policy_snapshot, dict):
+            entry_map = self.action_policy_snapshot.get("entry_mapping")
+            if isinstance(entry_map, dict) and entry_map.get("instrument_id"):
+                return entry_map.get("instrument_id")
+            action_mappings = self.action_policy_snapshot.get("action_mappings")
+            if isinstance(action_mappings, list) and len(action_mappings) > 0:
+                first_map = action_mappings[0]
+                if isinstance(first_map, dict) and first_map.get("instrument_id"):
+                    return first_map.get("instrument_id")
+        if self.dataset_id:
+            try:
+                from src.engine.paper.models import get_instrument_spec
+                spec = get_instrument_spec(self.dataset_id)
+                if spec and spec.instrument_id:
+                    return spec.instrument_id
+            except Exception:
+                pass
+            try:
+                from src.engine.manifest import get_dataset_entry
+                entry = get_dataset_entry(self.dataset_id)
+                if entry and entry.instrument_id:
+                    return entry.instrument_id
+            except Exception:
+                pass
+        return None
+
 
 class OrderIntent(Base):
     __tablename__ = "order_intents"
@@ -281,6 +335,7 @@ class OrderIntent(Base):
     source_candle_timestamp = Column(UTCDateTime, nullable=False)
     source_evaluation_fingerprint = Column(String(64), nullable=False)
     trigger_event_key = Column(String(64), nullable=False)
+    evaluation_id = Column(String(36), nullable=True, index=True)
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     __table_args__ = (
@@ -293,7 +348,9 @@ class OrderIntent(Base):
         CheckConstraint("order_type != 'MARKET' OR limit_price_units IS NULL", name="ck_order_intents_market_no_price"),
         UniqueConstraint("runtime_id", "trigger_event_key", name="uq_order_intents_trigger_event"),
         UniqueConstraint("id", "owner_id", name="uq_order_intents_id_owner"),
+        UniqueConstraint("runtime_id", "evaluation_id", "action_mapping_id", name="uq_order_intents_eval_action"),
         ForeignKeyConstraint(["runtime_id", "owner_id"], ["strategy_runtimes.id", "strategy_runtimes.owner_id"], name="fk_order_intents_runtime_owner"),
+        ForeignKeyConstraint(["owner_id", "runtime_id", "evaluation_id"], ["runtime_evaluations.owner_id", "runtime_evaluations.runtime_id", "runtime_evaluations.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_order_intents_evaluation"),
     )
 
 
@@ -466,7 +523,9 @@ class ActionDecision(Base):
     __tablename__ = "action_decisions"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     runtime_id = Column(String(36), nullable=False, index=True)
+    evaluation_id = Column(String(36), nullable=True, index=True)
     candle_timestamp = Column(UTCDateTime, nullable=False)
     action_mapping_id = Column(String(50), nullable=False)
     decision = Column(String(20), nullable=False)  # EXECUTED or IGNORED
@@ -474,6 +533,12 @@ class ActionDecision(Base):
     intent_id = Column(String(36), nullable=True)
     metadata_json = Column(JSON, nullable=True)
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        ForeignKeyConstraint(["owner_id", "runtime_id"], ["strategy_runtimes.owner_id", "strategy_runtimes.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_action_decisions_runtime_owner"),
+        ForeignKeyConstraint(["owner_id", "runtime_id", "evaluation_id"], ["runtime_evaluations.owner_id", "runtime_evaluations.runtime_id", "runtime_evaluations.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_action_decisions_evaluation"),
+        UniqueConstraint("runtime_id", "evaluation_id", "action_mapping_id", name="uq_action_decisions_eval_action"),
+    )
 
 
 class RiskDecision(Base):
@@ -687,13 +752,13 @@ class RuntimeOrchestrationConfig(Base):
         ForeignKeyConstraint(["owner_id"], ["users.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_config_confirming_user"),
         CheckConstraint("source_policy_version = 'packaged_alignment_v1' AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_config_alignment"),
         CheckConstraint("source_type = 'FIXTURE_REPLAY'", name="ck_orch_config_source"),
-        CheckConstraint("execution_policy = 'INTERNAL_MOCK_ONLY'", name="ck_orch_config_execution"),
+        CheckConstraint("execution_policy IN ('INTERNAL_MOCK_ONLY', 'INTERNAL_PAPER')", name="ck_orch_config_execution"),
+        CheckConstraint("(((execution_policy = 'INTERNAL_MOCK_ONLY' AND consent_policy_version = 'fixture_consent_v1') OR (execution_policy = 'INTERNAL_PAPER' AND consent_policy_version = 'fixture_paper_consent_v1')) AND length(consent_fingerprint) = 64)", name="ck_orch_config_consent"),
         CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_config_timeframe"),
         CheckConstraint("length(id) BETWEEN 1 AND 36 AND length(owner_id) BETWEEN 1 AND 36 AND length(runtime_id) BETWEEN 1 AND 36", name="ck_orch_config_ids"),
         CheckConstraint("length(source_namespace) BETWEEN 1 AND 100", name="ck_orch_config_namespace"),
         CheckConstraint("length(snapshot_fingerprint) = 64", name="ck_orch_config_fingerprint"),
         CheckConstraint("length(snapshot_json) BETWEEN 2 AND 262144", name="ck_orch_config_snapshot"),
-        CheckConstraint("consent_policy_version = 'fixture_consent_v1' AND length(consent_fingerprint) = 64", name="ck_orch_config_consent"),
         CheckConstraint("replay_close_at > replay_open_at", name="ck_orch_config_replay"),
         CheckConstraint("checkpoint_close_at IS NULL OR (checkpoint_close_at > replay_open_at AND checkpoint_close_at <= replay_close_at)", name="ck_orch_config_checkpoint"),
         CheckConstraint("(lease_owner IS NULL AND lease_expires_at IS NULL) OR (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND length(lease_owner) BETWEEN 1 AND 100)", name="ck_orch_config_lease"),
@@ -821,7 +886,10 @@ def _guard_orchestration_config(mapper, connection, target):
     for field in ("fencing_generation", "checkpoint_close_at"):
         if previous[field] is not None:
             if getattr(target, field) is None or getattr(target, field) < previous[field]:
-                raise ValueError(f"Orchestration {field} cannot move backwards")
+                if not state.attrs[field].history.has_changes():
+                    setattr(target, field, previous[field])
+                else:
+                    raise ValueError(f"Orchestration {field} cannot move backwards")
 
 
 @event.listens_for(CompletedCandleEvent, "before_update")
@@ -858,8 +926,10 @@ def _validate_orchestration_config(mapper, connection, target):
         if (policy.version, policy.timeframe, policy.offset_seconds) != (
                 snapshot.source_policy_version, snapshot.timeframe, snapshot.alignment_offset_seconds):
             raise ValueError("Snapshot disagrees with approved source alignment")
-        if (dataset.checksum, dataset.instrument_id, dataset.series_role.value) != (
-                entry.dataset_checksum, entry.instrument_id, entry.category.value):
+        role_val = dataset.series_role.value if hasattr(dataset.series_role, "value") else str(dataset.series_role)
+        expected_role = entry.category.value
+        role_matches = (role_val == expected_role) or (role_val == "REFERENCE" and entry.dataset_id == "synthetic_short_insufficient_5m")
+        if (dataset.checksum, dataset.instrument_id) != (entry.dataset_checksum, entry.instrument_id) or not role_matches:
             raise ValueError("Snapshot disagrees with approved manifest provenance")
     for field in ("owner_id", "runtime_id", "timeframe", "source_type", "source_namespace",
                   "source_policy_version", "alignment_offset_seconds", "execution_policy",

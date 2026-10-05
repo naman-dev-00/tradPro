@@ -7,7 +7,7 @@ export default defineConfig({
     globals: true,
     fileParallelism: false,
     maxConcurrency: 1,
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     exclude: ["e2e/**", "node_modules/**"],
   },
   resolve: {

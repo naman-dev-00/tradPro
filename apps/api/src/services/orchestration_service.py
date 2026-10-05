@@ -71,6 +71,16 @@ from src.schemas import (
 
 logger = logging.getLogger("tradepro.orchestration_service")
 
+TIMEFRAME_SECONDS: Dict[str, int] = {
+    "1m": 60,
+    "3m": 180,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "1d": 86400,
+}
+
 
 class ResourceNotFoundError(Exception):
     """Raised when an owned resource is not found or belongs to another owner."""
@@ -84,6 +94,21 @@ class PermissionDeniedError(Exception):
 
 class ConflictError(Exception):
     """Raised on invalid lifecycle transitions or conflicting idempotency keys."""
+    pass
+
+
+class AccountBarrierBlockedError(ValueError):
+    """Raised when an account turn barrier prevents a candidate from finalizing ahead of an earlier member turn."""
+    pass
+
+
+class RuntimeReplayBehindAccountError(ValueError):
+    """Raised when a runtime attempts to execute or activate behind the account's committed replay watermark."""
+    pass
+
+
+class AccountUnderReplayOwnershipError(ValueError):
+    """Raised when manual mutations are attempted on an account under active orchestration replay."""
     pass
 
 
@@ -104,7 +129,7 @@ class OrchestrationService:
             StrategyRuntime.owner_id == owner_id,
         )
         if for_update:
-            query = query.with_for_update()
+            query = query.populate_existing().with_for_update()
         runtime = query.first()
         if not runtime:
             raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
@@ -121,7 +146,12 @@ class OrchestrationService:
         user = db.query(User).filter(User.id == owner_id).first()
         OrchestrationService._verify_active_owner(user)
 
-        runtime = OrchestrationService._get_owned_runtime(db, payload.runtime_id, owner_id)
+        runtime = OrchestrationService._get_owned_runtime(db, payload.runtime_id, owner_id, for_update=True)
+        if runtime.status not in ("DRAFT", "READY") and not db.query(RuntimeOrchestrationConfig.id).filter(
+            RuntimeOrchestrationConfig.runtime_id == runtime.id,
+            RuntimeOrchestrationConfig.owner_id == owner_id,
+        ).first():
+            raise ConflictError("Configure orchestration before starting the runtime")
 
         # 1. Authoritative parent resource verification (all owner-scoped, indistinguishable 404)
         account = db.query(PaperAccount).filter(
@@ -164,6 +194,12 @@ class OrchestrationService:
             raise ValueError(f"Instrument mapping verification status is '{mapping.verification_status}' (must be VERIFIED)")
         if mapping.expiry_date and mapping.expiry_date <= now:
             raise ValueError(f"Instrument mapping has expired as of {mapping.expiry_date}")
+        target_inst = runtime.instrument_id
+        if target_inst and mapping.tradepro_instrument_id != target_inst:
+            raise ValueError(
+                f"Provider instrument mapping '{mapping.id}' instrument '{mapping.tradepro_instrument_id}' "
+                f"does not match runtime orderable instrument '{target_inst}'"
+            )
 
         # 3. Kill Switch check
         global_ks = db.query(KillSwitch).filter(KillSwitch.scope == "GLOBAL", KillSwitch.is_active.is_(True)).first()
@@ -207,20 +243,35 @@ class OrchestrationService:
 
         # 5. User-Submitted Structured Consent Validation (Server does not manufacture consent!)
         consent = payload.consent
-        if consent.consent_version != "fixture_consent_v1":
-            raise ValueError("Unsupported consent policy version")
+        exec_policy = getattr(payload, "execution_policy", None) or consent.acknowledged_execution_policy
+        if exec_policy not in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"):
+            raise ValueError(f"Unsupported execution policy '{exec_policy}'")
+
+        if exec_policy == "INTERNAL_MOCK_ONLY":
+            if consent.consent_version != "fixture_consent_v1":
+                raise ValueError("Unsupported consent policy version")
+            if consent.acknowledged_execution_policy != "INTERNAL_MOCK_ONLY":
+                raise ValueError("Consent must explicitly acknowledge INTERNAL_MOCK_ONLY execution policy")
+            if consent.confirm_internal_mock_only is not True:
+                raise ValueError("Consent must explicitly confirm internal mock execution")
+        elif exec_policy == "INTERNAL_PAPER":
+            if consent.consent_version != "fixture_paper_consent_v1":
+                raise ValueError("Unsupported consent policy version for INTERNAL_PAPER. Expected 'fixture_paper_consent_v1'")
+            if consent.acknowledged_execution_policy != "INTERNAL_PAPER":
+                raise ValueError("Consent must explicitly acknowledge INTERNAL_PAPER execution policy")
+            if consent.confirm_internal_paper_execution is not True:
+                raise ValueError("Consent must explicitly confirm internal paper execution")
+
         if consent.acknowledged_source_type != "FIXTURE_REPLAY":
             raise ValueError("Consent must explicitly acknowledge FIXTURE_REPLAY source type")
-        if consent.acknowledged_execution_policy != "INTERNAL_MOCK_ONLY":
-            raise ValueError("Consent must explicitly acknowledge INTERNAL_MOCK_ONLY execution policy")
         if consent.acknowledged_timeframe != payload.timeframe:
             raise ValueError("Consent acknowledged timeframe does not match requested timeframe")
         if utc(consent.acknowledged_replay_open_at) != utc(payload.replay_open_at) or utc(consent.acknowledged_replay_close_at) != utc(payload.replay_close_at):
             raise ValueError("Consent acknowledged replay bounds do not match requested bounds")
         if set(consent.acknowledged_dataset_ids) != dataset_ids_set:
             raise ValueError("Consent acknowledged datasets do not match requested datasets")
-        if consent.confirm_prohibition_of_live_trading is not True or consent.confirm_internal_mock_only is not True:
-            raise ValueError("Consent must explicitly confirm prohibition of live trading and internal mock execution")
+        if consent.confirm_prohibition_of_live_trading is not True:
+            raise ValueError("Consent must explicitly confirm prohibition of live trading")
 
         # 6. Build Snapshot Material
         mapping_identity = ProviderMappingIdentity(
@@ -252,6 +303,9 @@ class OrchestrationService:
             "lot_size_units": 1,
             "tick_size_units": 5,
         }
+        # Provider identity is frozen separately; never copy transport metadata
+        # from InstrumentSpec's optional provider_mapping into evidence.
+        inst_spec = {key: value for key, value in inst_spec.items() if key != "provider_mapping"}
 
         material = {
             "strategy_version": payload.strategy_version,
@@ -267,7 +321,7 @@ class OrchestrationService:
             "replay_close_at": utc(payload.replay_close_at),
             "engine_version": "1.0.0",
             "indicator_engine_version": "1.0.0",
-            "execution_policy": "INTERNAL_MOCK_ONLY",
+            "execution_policy": exec_policy,
             "external_transmission_allowed": False,
         }
 
@@ -303,7 +357,7 @@ class OrchestrationService:
         ]
 
         c_fp = consent_fingerprint(
-            consent_schema_version="fixture_consent_v1",
+            consent_schema_version=consent.consent_version,
             actor_user_id=actor_id,
             owner_id=owner_id,
             runtime_id=runtime.id,
@@ -321,6 +375,7 @@ class OrchestrationService:
             execution_policy=snapshot.execution_policy,
             explicit_live_trading_prohibition=True,
             explicit_internal_mock_confirmation=True,
+            explicit_internal_paper_confirmation=True,
         )
 
         config = RuntimeOrchestrationConfig(
@@ -333,7 +388,7 @@ class OrchestrationService:
             snapshot_fingerprint=snap_fingerprint,
             snapshot_json=canonical_json(snapshot.model_dump(mode="python")),
             consent_at=consent_time,
-            consent_policy_version="fixture_consent_v1",
+            consent_policy_version=consent.consent_version,
             consent_fingerprint=c_fp,
             source_policy_version=snapshot.source_policy_version,
             alignment_offset_seconds=snapshot.alignment_offset_seconds,
@@ -418,14 +473,18 @@ class OrchestrationService:
 
         # 3. Source and Policy Gate
         if config:
-            source_valid = (config.source_type == "FIXTURE_REPLAY" and config.execution_policy == "INTERNAL_MOCK_ONLY")
+            source_valid = (
+                config.source_type == "FIXTURE_REPLAY"
+                and config.execution_policy in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER")
+            )
             gates["source_policy_gate"] = source_valid
             if not source_valid:
-                reasons.append("Orchestration source must be FIXTURE_REPLAY and execution policy INTERNAL_MOCK_ONLY")
+                reasons.append("Orchestration source must be FIXTURE_REPLAY and execution policy INTERNAL_MOCK_ONLY or INTERNAL_PAPER")
 
             # Validate consent binding
             expected_c_fp = config_consent_fingerprint(config)
-            consent_valid = (config.consent_fingerprint == expected_c_fp and config.consent_policy_version == "fixture_consent_v1")
+            expected_c_ver = "fixture_paper_consent_v1" if config.execution_policy == "INTERNAL_PAPER" else "fixture_consent_v1"
+            consent_valid = (config.consent_fingerprint == expected_c_fp and config.consent_policy_version == expected_c_ver)
             gates["consent_binding_gate"] = consent_valid
             if not consent_valid:
                 reasons.append("Consent binding or fingerprint does not match configuration")
@@ -445,6 +504,7 @@ class OrchestrationService:
 
         # 5. Mapping Gate
         mapping_valid = False
+        mapping_failure_reason = None
         if config:
             try:
                 snap_dict = json.loads(config.snapshot_json)
@@ -458,12 +518,19 @@ class OrchestrationService:
                 ).first()
                 if mapping and mapping.verification_status == "VERIFIED":
                     if not mapping.expiry_date or mapping.expiry_date > now:
-                        mapping_valid = True
+                        target_inst = runtime.instrument_id
+                        if not target_inst or mapping.tradepro_instrument_id == target_inst:
+                            mapping_valid = True
+                        else:
+                            mapping_failure_reason = (
+                                f"Provider mapping instrument '{mapping.tradepro_instrument_id}' "
+                                f"does not match runtime orderable instrument '{target_inst}'"
+                            )
             except Exception:
                 mapping_valid = False
         gates["mapping_gate"] = mapping_valid
         if not mapping_valid:
-            reasons.append("Frozen provider mapping is missing, unverified, or expired")
+            reasons.append(mapping_failure_reason or "Frozen provider mapping is missing, unverified, or expired")
 
         # 6. Kill Switch Gate
         global_ks = db.query(KillSwitch).filter(KillSwitch.scope == "GLOBAL", KillSwitch.is_active.is_(True)).first()
@@ -603,18 +670,30 @@ class OrchestrationService:
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Activate orchestration for an eligible runtime, strictly revalidating all prerequisites."""
-        # 1. Check user and runtime
+        # 1. Follow universal lock hierarchy: L1 StrategyRuntime -> L2 RuntimeOrchestrationConfig -> L3 PaperAccount
         user = db.query(User).filter(User.id == owner_id).first()
         OrchestrationService._verify_active_owner(user)
-        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id)
+        runtime = OrchestrationService._get_owned_runtime(db, runtime_id, owner_id, for_update=True)
 
-        # 2. Check configuration exists
+        # 2. Check configuration exists and lock with FOR UPDATE (Level 2)
         config = db.query(RuntimeOrchestrationConfig).filter(
             RuntimeOrchestrationConfig.runtime_id == runtime_id,
             RuntimeOrchestrationConfig.owner_id == owner_id,
-        ).first()
+        ).with_for_update().first()
         if not config:
             raise ResourceNotFoundError(f"Orchestration configuration for runtime '{runtime_id}' not found.")
+
+        if isinstance(payload, dict):
+            c_ver = payload.get("consent_version") or payload.get("policy_version") or ("fixture_paper_consent_v1" if config.execution_policy == "INTERNAL_PAPER" else "fixture_consent_v1")
+            ack_pol = payload.get("acknowledged_execution_policy", config.execution_policy)
+            conf_mock = payload.get("confirm_internal_mock_only")
+            conf_paper = payload.get("confirm_internal_paper_execution")
+            payload = OrchestrationActivationRequest(
+                consent_version=c_ver,
+                acknowledged_execution_policy=ack_pol,
+                confirm_internal_mock_only=conf_mock,
+                confirm_internal_paper_execution=conf_paper,
+            )
 
         # 3. Canonical request hash covering all authoritative dimensions:
         # owner, operation, runtime, configuration, consent fingerprint, expected source state, target state, payload
@@ -630,6 +709,7 @@ class OrchestrationService:
                 "consent_version": payload.consent_version,
                 "acknowledged_execution_policy": payload.acknowledged_execution_policy,
                 "confirm_internal_mock_only": bool(payload.confirm_internal_mock_only),
+                "confirm_internal_paper_execution": bool(payload.confirm_internal_paper_execution),
             },
         })
         req_hash = hashlib.sha256(canonical_req.encode("utf-8")).hexdigest()
@@ -646,12 +726,22 @@ class OrchestrationService:
                 raise ConflictError("Idempotency conflict: key reused with different canonical request.")
 
         # 4. Revalidate structured consent confirmation
-        if payload.consent_version != "fixture_consent_v1":
-            raise ValueError("Invalid consent policy version.")
-        if payload.acknowledged_execution_policy != "INTERNAL_MOCK_ONLY":
-            raise ValueError("Activation requires explicit acknowledgement of INTERNAL_MOCK_ONLY policy.")
-        if payload.confirm_internal_mock_only is not True:
-            raise ValueError("Explicit confirmation of internal mock execution is required.")
+        if config.execution_policy == "INTERNAL_MOCK_ONLY":
+            if payload.consent_version != "fixture_consent_v1":
+                raise ValueError("Invalid consent policy version for INTERNAL_MOCK_ONLY.")
+            if payload.acknowledged_execution_policy != "INTERNAL_MOCK_ONLY":
+                raise ValueError("Activation requires explicit acknowledgement of INTERNAL_MOCK_ONLY policy.")
+            if payload.confirm_internal_mock_only is not True:
+                raise ValueError("Explicit confirmation of internal mock execution is required.")
+        elif config.execution_policy == "INTERNAL_PAPER":
+            if payload.consent_version != "fixture_paper_consent_v1":
+                raise ValueError("Invalid consent policy version for INTERNAL_PAPER. Expected 'fixture_paper_consent_v1'.")
+            if payload.acknowledged_execution_policy != "INTERNAL_PAPER":
+                raise ValueError("Activation requires explicit acknowledgement of INTERNAL_PAPER policy.")
+            if payload.confirm_internal_paper_execution is not True:
+                raise ValueError("Explicit confirmation of internal paper execution is required.")
+        else:
+            raise ValueError(f"Unknown execution policy '{config.execution_policy}'")
 
         # 5. Lifecycle status check (idempotent if already RUNNING, ConflictError if not READY)
         curr_status = RuntimeStatus(runtime.status)
@@ -679,6 +769,44 @@ class OrchestrationService:
 
         # 7. Transmission Prohibition Check
         assert_orchestration_execution_is_internal_only(config)
+
+        # 7b. Paper Account Watermark & Lock Hierarchy Check (if INTERNAL_PAPER)
+        if config.execution_policy == "INTERNAL_PAPER":
+            account = db.query(PaperAccount).filter(
+                PaperAccount.id == runtime.account_id,
+                PaperAccount.owner_id == owner_id,
+            ).with_for_update().first()
+            if not account:
+                raise ResourceNotFoundError(f"Linked paper account '{runtime.account_id}' not found.")
+            if not account.is_active:
+                raise ValueError("Linked paper account is inactive.")
+            tf_sec = TIMEFRAME_SECONDS.get(config.timeframe, 900)
+            rt_target_start = (config.checkpoint_close_at + datetime.timedelta(seconds=tf_sec)) if config.checkpoint_close_at else (config.replay_open_at + datetime.timedelta(seconds=tf_sec))
+            watermark = account.committed_replay_watermark
+            if watermark is not None:
+                if rt_target_start < watermark:
+                    raise RuntimeReplayBehindAccountError(
+                        f"Runtime '{runtime.id}' start boundary {rt_target_start} is behind account committed replay watermark {watermark}."
+                    )
+                elif rt_target_start == watermark:
+                    later_committed = (
+                        db.query(RuntimeEvaluation.runtime_id)
+                        .join(StrategyRuntime, RuntimeEvaluation.runtime_id == StrategyRuntime.id)
+                        .join(RuntimeOrchestrationConfig, RuntimeEvaluation.config_id == RuntimeOrchestrationConfig.id)
+                        .filter(
+                            StrategyRuntime.account_id == account.id,
+                            StrategyRuntime.owner_id == account.owner_id,
+                            RuntimeEvaluation.owner_id == account.owner_id,
+                            RuntimeEvaluation.close_at == watermark,
+                            RuntimeEvaluation.runtime_id >= runtime.id,
+                            RuntimeOrchestrationConfig.execution_policy == "INTERNAL_PAPER",
+                        )
+                        .first()
+                    )
+                    if later_committed:
+                        raise RuntimeReplayBehindAccountError(
+                            f"Cannot activate runtime '{runtime.id}' at boundary {rt_target_start}: member '{later_committed[0]}' already committed at or after this tie priority."
+                        )
 
         validate_runtime_transition(curr_status, RuntimeStatus.RUNNING, actor=actor_id, reason_code="ORCHESTRATION_ACTIVATED")
 
@@ -757,11 +885,19 @@ class OrchestrationService:
             RuntimeOrchestrationConfig.owner_id == owner_id,
         ).with_for_update().first()
         if config:
+            db.refresh(config)
             config.lease_owner = None
             config.lease_expires_at = None
             config.fencing_generation = config.fencing_generation + 1
             config.last_reason_code = "ORCHESTRATION_PAUSED"
             config.updated_at = datetime.datetime.now(datetime.timezone.utc)
+
+            # Follow universal lock hierarchy: L1 StrategyRuntime -> L2 RuntimeOrchestrationConfig -> L3 PaperAccount
+            if config.execution_policy == "INTERNAL_PAPER" and runtime.account_id:
+                db.query(PaperAccount).filter(
+                    PaperAccount.id == runtime.account_id,
+                    PaperAccount.owner_id == owner_id,
+                ).with_for_update().first()
 
         updated = OrchestrationService._execute_atomic_status_update(
             db=db,
@@ -815,6 +951,44 @@ class OrchestrationService:
         if not config:
             raise ResourceNotFoundError(f"Configuration for runtime '{runtime_id}' not found.")
         assert_orchestration_execution_is_internal_only(config)
+
+        # Paper Account Watermark & Lock Hierarchy Check on Resume
+        if config.execution_policy == "INTERNAL_PAPER":
+            account = db.query(PaperAccount).filter(
+                PaperAccount.id == runtime.account_id,
+                PaperAccount.owner_id == owner_id,
+            ).with_for_update().first()
+            if not account:
+                raise ResourceNotFoundError(f"Linked paper account '{runtime.account_id}' not found.")
+            if not account.is_active:
+                raise ValueError("Linked paper account is inactive.")
+            tf_sec = TIMEFRAME_SECONDS.get(config.timeframe, 900)
+            rt_next = (config.checkpoint_close_at + datetime.timedelta(seconds=tf_sec)) if config.checkpoint_close_at else (config.replay_open_at + datetime.timedelta(seconds=tf_sec))
+            watermark = account.committed_replay_watermark
+            if watermark is not None:
+                if rt_next < watermark:
+                    raise RuntimeReplayBehindAccountError(
+                        f"Cannot resume runtime '{runtime.id}': next boundary {rt_next} is behind account committed replay watermark {watermark}."
+                    )
+                elif rt_next == watermark:
+                    later_committed = (
+                        db.query(RuntimeEvaluation.runtime_id)
+                        .join(StrategyRuntime, RuntimeEvaluation.runtime_id == StrategyRuntime.id)
+                        .join(RuntimeOrchestrationConfig, RuntimeEvaluation.config_id == RuntimeOrchestrationConfig.id)
+                        .filter(
+                            StrategyRuntime.account_id == account.id,
+                            StrategyRuntime.owner_id == account.owner_id,
+                            RuntimeEvaluation.owner_id == account.owner_id,
+                            RuntimeEvaluation.close_at == watermark,
+                            RuntimeEvaluation.runtime_id >= runtime.id,
+                            RuntimeOrchestrationConfig.execution_policy == "INTERNAL_PAPER",
+                        )
+                        .first()
+                    )
+                    if later_committed:
+                        raise RuntimeReplayBehindAccountError(
+                            f"Cannot resume runtime '{runtime.id}' at boundary {rt_next}: member '{later_committed[0]}' already committed at or after this tie priority."
+                        )
 
         validate_runtime_transition(curr_status, RuntimeStatus.RUNNING, actor=actor_id, reason_code="ORCHESTRATION_RESUMED")
 
@@ -874,11 +1048,19 @@ class OrchestrationService:
             RuntimeOrchestrationConfig.owner_id == owner_id,
         ).with_for_update().first()
         if config:
+            db.refresh(config)
             config.lease_owner = None
             config.lease_expires_at = None
             config.fencing_generation = config.fencing_generation + 1
             config.last_reason_code = "ORCHESTRATION_STOPPED"
             config.updated_at = datetime.datetime.now(datetime.timezone.utc)
+
+            # Follow universal lock hierarchy: L1 StrategyRuntime -> L2 RuntimeOrchestrationConfig -> L3 PaperAccount
+            if config.execution_policy == "INTERNAL_PAPER" and runtime.account_id:
+                db.query(PaperAccount).filter(
+                    PaperAccount.id == runtime.account_id,
+                    PaperAccount.owner_id == owner_id,
+                ).with_for_update().first()
 
         updated = OrchestrationService._execute_atomic_status_update(
             db=db,
