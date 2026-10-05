@@ -15,6 +15,7 @@ Implements:
 - Accounting conservation with dual-balance ledger tracking
 """
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -997,7 +998,7 @@ class StrategyEvaluationWorker:
                         created_at=now,
                     ))
                     intent_id = str(uuid.uuid4())
-                    intent_key = f"{config.runtime_id}:{boundary.isoformat()}:{mapping_id}"
+                    intent_key = hashlib.sha256(f"{config.runtime_id}:{boundary.isoformat()}:{mapping_id}".encode("utf-8")).hexdigest()
                     intent = OrderIntent(
                         id=intent_id,
                         owner_id=config.owner_id,
