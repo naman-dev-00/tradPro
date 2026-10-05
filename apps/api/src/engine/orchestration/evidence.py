@@ -9,12 +9,14 @@ from .fingerprint import canonical_json, _fingerprint
 SNAPSHOT_KEYS = frozenset("""name timeframe candidate_selection_mode global_conditions candidate_conditions
 action type id conditions lhs operator rhs tolerance indicator symbol params
 period source level value range risk_config max_position_size stop_loss_pct
-take_profit_pct validity_window strategy_id version entry_mapping exit_mapping
+take_profit_pct validity_window strategy_id version entry_mapping exit_mapping action_mappings
 position_exists_behavior max_entries_per_day mapping_id rule_target trigger_status
 instrument_id side order_type quantity quantity_units limit_price limit_price_units
 time_in_force cooldown_bars intent_type max_quantity_per_order max_notional_per_order
 max_open_orders max_open_positions max_instrument_exposure max_total_exposure
 max_trades_per_day max_daily_realized_loss allowed_instruments max_price_staleness_seconds
+max_quantity_per_order_units max_notional_per_order_units max_instrument_exposure_units
+max_total_exposure_units max_daily_realized_loss_units flat_fee_units
 fee_basis_points flat_fee is_default reference_dataset_id execution_dataset_id
 dataset_id currency currency_scale price_scale quantity_scale tick_size_units
 lot_size_units min_quantity_units max_quantity_units allow_fractional allow_short
@@ -106,8 +108,11 @@ def consent_fingerprint(
         "source_type": str(source_type),
         "execution_policy": str(execution_policy),
         "explicit_live_trading_prohibition": bool(explicit_live_trading_prohibition),
-        "explicit_internal_mock_confirmation": bool(explicit_internal_mock_confirmation),
     }
+    if execution_policy == "INTERNAL_PAPER" or consent_schema_version == "fixture_paper_consent_v1":
+        payload["explicit_internal_paper_confirmation"] = bool(extra_kwargs.get("explicit_internal_paper_confirmation", True))
+    else:
+        payload["explicit_internal_mock_confirmation"] = bool(explicit_internal_mock_confirmation)
     return _fingerprint("orchestration_consent_v1", payload)
 
 
@@ -141,8 +146,11 @@ def config_consent_fingerprint(config, actor_user_id: str = None) -> str:
     actor = actor_user_id or getattr(config, "_actor_user_id", None) or getattr(config, "owner_id", "")
     config_id = getattr(config, "id", "") or ""
 
+    consent_ver = getattr(config, "consent_policy_version", "fixture_consent_v1") or "fixture_consent_v1"
+    exec_pol = getattr(config, "execution_policy", "INTERNAL_MOCK_ONLY") or "INTERNAL_MOCK_ONLY"
+
     return consent_fingerprint(
-        consent_schema_version=getattr(config, "consent_policy_version", "fixture_consent_v1") or "fixture_consent_v1",
+        consent_schema_version=consent_ver,
         actor_user_id=actor,
         owner_id=getattr(config, "owner_id", ""),
         runtime_id=getattr(config, "runtime_id", ""),
@@ -157,9 +165,10 @@ def config_consent_fingerprint(config, actor_user_id: str = None) -> str:
         replay_open_at=getattr(config, "replay_open_at"),
         replay_close_at=getattr(config, "replay_close_at"),
         source_type=getattr(config, "source_type", ""),
-        execution_policy=getattr(config, "execution_policy", ""),
+        execution_policy=exec_pol,
         explicit_live_trading_prohibition=True,
         explicit_internal_mock_confirmation=True,
+        explicit_internal_paper_confirmation=True,
     )
 
 
@@ -168,11 +177,27 @@ def evaluation_evidence(value, *, risk=False):
     if not isinstance(value, str) or len(value) > 65536:
         raise ValueError("Evidence exceeds limit")
     obj = json.loads(value)
-    allowed = {"outcome", "reason_codes"} if risk else {"result", "condition_ids"}
+    allowed = {"outcome", "reason_codes", "actions"} if risk else {"result", "condition_ids", "rule_results"}
     if not isinstance(obj, dict) or not set(obj) <= allowed:
         raise ValueError("Unapproved evaluation evidence field")
     for key, item in obj.items():
-        if key in ("result", "outcome"):
+        if key == "rule_results":
+            if not isinstance(item, dict) or set(item) != {"GLOBAL", "CANDIDATE"} or any(
+                value not in {"TRUE", "FALSE", "UNAVAILABLE", "INVALID"} for value in item.values()
+            ):
+                raise ValueError("Invalid rule result projection")
+        elif key == "actions":
+            if not isinstance(item, list) or len(item) > 2:
+                raise ValueError("Invalid action evidence collection")
+            for action in item:
+                if not isinstance(action, dict) or set(action) != {"mapping_id", "accepted", "risk_outcome", "reason_code"}:
+                    raise ValueError("Invalid action evidence fields")
+                safe_text(action["mapping_id"], 50)
+                if type(action["accepted"]) is not bool or action["risk_outcome"] not in {"NOT_RUN", "REJECTED", "ACCEPTED"}:
+                    raise ValueError("Invalid action evidence outcome")
+                if not re.fullmatch(r"[A-Z0-9_]{1,64}", action["reason_code"]):
+                    raise ValueError("Invalid action reason")
+        elif key in ("result", "outcome"):
             values = {"NOT_RUN", "REJECTED", "ACCEPTED"} if risk else {"TRUE", "FALSE", "UNAVAILABLE", "INVALID"}
             if item not in values:
                 raise ValueError("Invalid evidence status")

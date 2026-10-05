@@ -920,6 +920,7 @@ export interface StrategyRuntime {
   status: "DRAFT" | "READY" | "RUNNING" | "PAUSED" | "HALTED" | "STOPPED" | "ERROR";
   trading_mode: string;
   dataset_id: string;
+  instrument_id?: string | null;
   timeframe: string;
   last_processed_candle_timestamp?: string | null;
   consecutive_errors: number;
@@ -1375,6 +1376,258 @@ export async function resolveReconciliation(
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || "Failed to resolve reconciliation record");
+  }
+  return res.json();
+}
+
+// --- Milestone 6C: Orchestration & Automated Paper Execution ---
+
+export interface OrchestrationConsentSubmission {
+  policy_version: "fixture_consent_v1" | "fixture_paper_consent_v1";
+  confirm_no_external_transmission: boolean;
+  confirm_fixture_replay_only: boolean;
+  confirm_operator_authorization: boolean;
+  confirm_internal_paper_execution?: boolean;
+}
+
+export interface OrchestrationConfigCreateRequest {
+  runtime_id: string;
+  timeframe: "5m" | "15m";
+  replay_open_at: string;
+  replay_close_at: string;
+  strategy_version: number;
+  provider_mapping_id: string;
+  datasets: { dataset_id: string; series_role: "REFERENCE" | "SUBJECT" }[];
+  execution_policy: "INTERNAL_MOCK_ONLY" | "INTERNAL_PAPER";
+  consent: {
+    consent_version: string;
+    acknowledged_source_type: "FIXTURE_REPLAY";
+    acknowledged_execution_policy: "INTERNAL_MOCK_ONLY" | "INTERNAL_PAPER";
+    acknowledged_timeframe: "5m" | "15m";
+    acknowledged_replay_open_at: string;
+    acknowledged_replay_close_at: string;
+    acknowledged_dataset_ids: string[];
+    confirm_prohibition_of_live_trading: boolean;
+    confirm_internal_mock_only: boolean;
+    confirm_internal_paper_execution: boolean;
+  };
+}
+
+export async function fetchPaperRuntime(runtimeId: string): Promise<StrategyRuntime> {
+  const res = await apiFetch(`/api/v1/paper/runtimes/${runtimeId}`);
+  if (!res.ok) throw new Error("Failed to fetch runtime");
+  return res.json();
+}
+
+export interface OrchestrationConfigResponse {
+  id: string;
+  runtime_id: string;
+  owner_id: string;
+  source_type: string;
+  source_namespace: string;
+  source_policy_version: string;
+  timeframe: string;
+  alignment_offset_seconds: number;
+  snapshot_fingerprint: string;
+  consent_fingerprint: string;
+  consent_policy_version: string;
+  execution_policy: string;
+  replay_open_at: string;
+  replay_close_at: string;
+  checkpoint_close_at: string | null;
+  fencing_generation: number;
+  retry_count: number;
+  next_attempt_at: string | null;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  last_reason_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrchestrationReadinessResponse {
+  ready: boolean;
+  reasons: string[];
+  gates: Record<string, boolean>;
+}
+
+export interface OrchestrationLifecycleResponse {
+  runtime_id: string;
+  status: string;
+  previous_status: string;
+  action: string;
+  message: string;
+  timestamp: string;
+}
+
+export interface RuntimeEvaluationSummaryResponse {
+  id: string;
+  runtime_id: string;
+  config_id: string;
+  snapshot_fingerprint: string;
+  evaluation_fingerprint: string;
+  timeframe: string;
+  close_at: string;
+  reference_candle_id: string;
+  subject_candle_id: string | null;
+  evaluation_status: string;
+  action_outcome: string;
+  risk_outcome: string;
+  no_order_reason: string | null;
+  finalized_at: string;
+}
+
+export interface RuntimeEvaluationDetailResponse extends RuntimeEvaluationSummaryResponse {
+  required_candles_json: string;
+  audit_json: string;
+  risk_summary_json: string;
+}
+
+export interface EvaluationHistoryResponse {
+  runtime_id: string;
+  total: number;
+  limit: number;
+  offset: number;
+  evaluations: RuntimeEvaluationSummaryResponse[];
+}
+
+export async function createOrchestrationConfig(
+  payload: OrchestrationConfigCreateRequest
+): Promise<OrchestrationConfigResponse> {
+  const res = await apiFetch("/api/v1/orchestration/configs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to create orchestration configuration");
+  }
+  return res.json();
+}
+
+export async function fetchOrchestrationConfig(
+  runtimeId: string
+): Promise<OrchestrationConfigResponse | null> {
+  const res = await apiFetch(`/api/v1/orchestration/configs/${runtimeId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch orchestration configuration");
+  }
+  return res.json();
+}
+
+export async function fetchOrchestrationReadiness(
+  runtimeId: string
+): Promise<OrchestrationReadinessResponse> {
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/readiness`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch orchestration readiness");
+  }
+  return res.json();
+}
+
+export interface OrchestrationActivationPayload {
+  consent_version: string;
+  acknowledged_execution_policy: string;
+  confirm_internal_mock_only?: boolean;
+  confirm_internal_paper_execution?: boolean;
+}
+
+export async function activateOrchestration(
+  runtimeId: string,
+  payload: OrchestrationActivationPayload | OrchestrationConsentSubmission
+): Promise<OrchestrationLifecycleResponse> {
+  const body = "acknowledged_execution_policy" in payload ? payload : {
+    consent_version: payload.policy_version,
+    acknowledged_execution_policy: payload.confirm_internal_paper_execution ? "INTERNAL_PAPER" : "INTERNAL_MOCK_ONLY",
+    confirm_internal_mock_only: !payload.confirm_internal_paper_execution,
+    confirm_internal_paper_execution: payload.confirm_internal_paper_execution,
+  };
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/activate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to activate orchestration runtime");
+  }
+  return res.json();
+}
+
+export async function pauseOrchestration(
+  runtimeId: string
+): Promise<OrchestrationLifecycleResponse> {
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/pause`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to pause orchestration runtime");
+  }
+  return res.json();
+}
+
+export async function resumeOrchestration(
+  runtimeId: string
+): Promise<OrchestrationLifecycleResponse> {
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/resume`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to resume orchestration runtime");
+  }
+  return res.json();
+}
+
+export async function stopOrchestration(
+  runtimeId: string
+): Promise<OrchestrationLifecycleResponse> {
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/stop`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to stop orchestration runtime");
+  }
+  return res.json();
+}
+
+export async function fetchEvaluationHistory(
+  runtimeId: string,
+  limit: number = 20,
+  offset: number = 0
+): Promise<EvaluationHistoryResponse> {
+  const params = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/evaluations?${params.toString()}`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch evaluation history");
+  }
+  return res.json();
+}
+
+export async function fetchLatestEvaluation(
+  runtimeId: string
+): Promise<RuntimeEvaluationDetailResponse> {
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/evaluations/latest`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch latest evaluation");
+  }
+  return res.json();
+}
+
+export async function fetchEvaluationDetail(
+  runtimeId: string,
+  evaluationId: string
+): Promise<RuntimeEvaluationDetailResponse> {
+  const res = await apiFetch(`/api/v1/orchestration/runtimes/${runtimeId}/evaluations/${evaluationId}`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to fetch evaluation detail");
   }
   return res.json();
 }

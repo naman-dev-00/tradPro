@@ -24,7 +24,7 @@ export function AuthHeaderBadge() {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 text-xs text-slate-400 animate-pulse" aria-label="Loading user state">
+      <div role="status" className="flex items-center gap-2 text-xs text-slate-400 animate-pulse" aria-label="Loading user state">
         <div className="h-6 w-16 bg-slate-800 rounded"></div>
       </div>
     );
@@ -53,7 +53,7 @@ export function AuthHeaderBadge() {
   }[user.role] || "bg-slate-700 text-slate-300 border-slate-600";
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3 bg-slate-900/80 border border-slate-800 px-2 sm:px-2.5 py-1 rounded-lg shrink-0" aria-label="User profile and session badge">
+    <div role="group" className="flex items-center gap-2 sm:gap-3 bg-slate-900/80 border border-slate-800 px-2 sm:px-2.5 py-1 rounded-lg shrink-0" aria-label="User profile and session badge">
       <div className="flex items-center gap-1.5 min-w-0">
         <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" aria-hidden="true"></div>
         <span className="text-xs font-medium text-slate-200 truncate max-w-[70px] xs:max-w-[100px] sm:max-w-none" title={user.username}>

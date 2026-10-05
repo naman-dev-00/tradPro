@@ -89,7 +89,7 @@ try:
     verify_database_connection()
     raise AssertionError('Schema verification was bypassed')
 except RuntimeError as exc:
-    assert 'Run Alembic upgrade 0006_strategy_orchestrator' in str(exc)
+    assert 'Run Alembic upgrade 0007_paper_execution' in str(exc)
 """, target, app_env)
     assert result.returncode == 0, result.stderr
     assert not target.exists()

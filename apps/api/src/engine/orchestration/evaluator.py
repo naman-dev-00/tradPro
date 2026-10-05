@@ -235,6 +235,11 @@ class OrchestrationEvaluator:
             "result": eval_status_str,
             "condition_ids": passed_conditions[:10],
         }
+        if config.execution_policy == "INTERNAL_PAPER":
+            audit_payload["rule_results"] = {
+                "GLOBAL": rule_result.reference_series_result.status.value if rule_result.reference_series_result else "UNAVAILABLE",
+                "CANDIDATE": rule_result.subject_series_result.status.value if rule_result.subject_series_result else "UNAVAILABLE",
+            }
         audit_json = evaluation_evidence(json.dumps(audit_payload), risk=False)
 
         reason_code = no_order_reason if no_order_reason else "PASSED"

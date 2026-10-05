@@ -15,8 +15,9 @@ from src.engine.orchestration.storage import ExactInteger
 from src.models import RuntimeOrchestrationConfig, CompletedCandleEvent, RuntimeEvaluation
 from tests.orchestration_support import seed_graph, seed_parent, NOW, OPEN, CLOSE
 
-HEAD = "0006_strategy_orchestrator"
-PREVIOUS = "0005_upstox_sandbox"
+HEAD = "0007_paper_execution"
+PREVIOUS = "0006_strategy_orchestrator"
+BASE_PREVIOUS = "0005_upstox_sandbox"
 MODELS = (RuntimeOrchestrationConfig, CompletedCandleEvent, RuntimeEvaluation)
 TABLES = tuple(model.__tablename__ for model in MODELS)
 
@@ -86,7 +87,7 @@ def test_sole_head_and_revision_length():
     graph = ScriptDirectory.from_config(migration_config("sqlite:///:memory:"))
     assert graph.get_heads() == [HEAD]
     assert graph.get_revision(HEAD).down_revision == PREVIOUS
-    assert len(HEAD) == 26 <= 32
+    assert len(HEAD) <= 32
 
 
 def test_fresh_and_stepwise_empty_downgrade_reupgrade(migrated):
@@ -94,7 +95,7 @@ def test_fresh_and_stepwise_empty_downgrade_reupgrade(migrated):
     with engine.connect() as conn:
         assert conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == HEAD
     assert set(TABLES) <= set(sa.inspect(engine).get_table_names())
-    command.downgrade(config, PREVIOUS)
+    command.downgrade(config, BASE_PREVIOUS)
     assert not set(TABLES) & set(sa.inspect(engine).get_table_names())
     command.upgrade(config, HEAD)
     assert set(TABLES) <= set(sa.inspect(engine).get_table_names())
@@ -149,7 +150,7 @@ def test_populated_downgrade_refused_for_each_table(migrated, level):
         seed_graph(session, level)
         session.commit()
     with pytest.raises(RuntimeError, match=TABLES[level - 1]):
-        command.downgrade(config, PREVIOUS)
+        command.downgrade(config, BASE_PREVIOUS)
     assert set(TABLES) <= set(sa.inspect(engine).get_table_names())
 
 

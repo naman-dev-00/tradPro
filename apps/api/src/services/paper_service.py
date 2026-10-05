@@ -35,6 +35,7 @@ from src.engine.orchestration.transmission_gate import (
     assert_orchestration_execution_is_internal_only,
     TransmissionProhibitedError,
 )
+from src.services.orchestration_service import AccountUnderReplayOwnershipError
 from src.engine.paper.models import (
     TradingMode,
     IntentType,
@@ -462,9 +463,7 @@ class PaperService:
 
     @staticmethod
     def validate_runtime(db: Session, runtime_id: str, owner_id: str) -> Dict[str, Any]:
-        runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == runtime_id, StrategyRuntime.owner_id == owner_id).first()
-        if not runtime:
-            raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
+        runtime = PaperService._lock_manual_runtime(db, runtime_id, owner_id)
 
         errors = []
         # Validate based on frozen snapshots
@@ -508,10 +507,22 @@ class PaperService:
         return {"valid": True, "status": runtime.status}
 
     @staticmethod
-    def start_runtime(db: Session, runtime_id: str, owner_id: str) -> StrategyRuntime:
-        runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == runtime_id, StrategyRuntime.owner_id == owner_id).first()
+    def _lock_manual_runtime(db: Session, runtime_id: str, owner_id: str) -> StrategyRuntime:
+        runtime = db.query(StrategyRuntime).filter(
+            StrategyRuntime.id == runtime_id, StrategyRuntime.owner_id == owner_id
+        ).populate_existing().with_for_update().first()
         if not runtime:
             raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
+        if db.query(RuntimeOrchestrationConfig.id).filter(
+            RuntimeOrchestrationConfig.runtime_id == runtime_id,
+            RuntimeOrchestrationConfig.owner_id == owner_id,
+        ).first():
+            raise ConflictError("Configured runtimes require orchestration lifecycle endpoints")
+        return runtime
+
+    @staticmethod
+    def start_runtime(db: Session, runtime_id: str, owner_id: str) -> StrategyRuntime:
+        runtime = PaperService._lock_manual_runtime(db, runtime_id, owner_id)
 
         # Check kill switch
         global_ks = db.query(KillSwitch).filter(KillSwitch.scope == "GLOBAL", KillSwitch.is_active.is_(True)).first()
@@ -541,9 +552,7 @@ class PaperService:
 
     @staticmethod
     def pause_runtime(db: Session, runtime_id: str, owner_id: str) -> StrategyRuntime:
-        runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == runtime_id, StrategyRuntime.owner_id == owner_id).first()
-        if not runtime:
-            raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
+        runtime = PaperService._lock_manual_runtime(db, runtime_id, owner_id)
 
         curr_status = RuntimeStatus(runtime.status)
         validate_runtime_transition(curr_status, RuntimeStatus.PAUSED, actor=owner_id, reason_code="USER_PAUSED")
@@ -569,9 +578,7 @@ class PaperService:
 
     @staticmethod
     def stop_runtime(db: Session, runtime_id: str, owner_id: str) -> StrategyRuntime:
-        runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == runtime_id, StrategyRuntime.owner_id == owner_id).first()
-        if not runtime:
-            raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
+        runtime = PaperService._lock_manual_runtime(db, runtime_id, owner_id)
 
         curr_status = RuntimeStatus(runtime.status)
         validate_runtime_transition(curr_status, RuntimeStatus.STOPPED, actor=owner_id, reason_code="USER_STOPPED")
@@ -602,13 +609,29 @@ class PaperService:
 
     @staticmethod
     def cancel_order(db: Session, order_id: str, owner_id: str, reason: str = "USER_CANCELLED") -> Order:
-        order = db.query(Order).filter(Order.id == order_id, Order.owner_id == owner_id).first()
-        if not order:
+        order_meta = db.query(Order.id, Order.runtime_id, Order.account_id).filter(Order.id == order_id, Order.owner_id == owner_id).first()
+        if not order_meta:
             raise ResourceNotFoundError(f"Order '{order_id}' not found.")
-        return PaperService._cancel_order_internal(db, order, actor=owner_id, reason=reason)
+
+        # Follow universal lock hierarchy: L1 StrategyRuntime -> L2 RuntimeOrchestrationConfig -> L3 PaperAccount -> L5 Order
+        runtime = None
+        orch_cfg = None
+        if order_meta.runtime_id:
+            runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == order_meta.runtime_id, StrategyRuntime.owner_id == owner_id).with_for_update().first()
+            if runtime:
+                orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == runtime.id).with_for_update().first()
+
+        acct = db.query(PaperAccount).filter(PaperAccount.id == order_meta.account_id, PaperAccount.owner_id == owner_id).with_for_update().first()
+
+        # Check active replay ownership: while RUNNING, manual mutations are forbidden
+        if runtime and runtime.status == RuntimeStatus.RUNNING.value and orch_cfg and orch_cfg.execution_policy == "INTERNAL_PAPER":
+            raise AccountUnderReplayOwnershipError("Cannot manually cancel order while automated paper replay is RUNNING. Pause or stop the runtime first.")
+
+        order = db.query(Order).filter(Order.id == order_id, Order.owner_id == owner_id).with_for_update().first()
+        return PaperService._cancel_order_internal(db, order, actor=owner_id, reason=reason, locked_account=acct)
 
     @staticmethod
-    def _cancel_order_internal(db: Session, order: Order, actor: str, reason: str) -> Order:
+    def _cancel_order_internal(db: Session, order: Order, actor: str, reason: str, locked_account: Optional[PaperAccount] = None) -> Order:
         curr_status = OrderStatus(order.status)
         validate_order_transition(curr_status, OrderStatus.CANCEL_PENDING, actor=actor, reason_code="CANCEL_REQUESTED")
         order.status = OrderStatus.CANCEL_PENDING.value
@@ -699,13 +722,16 @@ class PaperService:
 
         # Release cash reservation if BUY order
         if order.side == OrderSide.BUY.value:
-            acct = db.query(PaperAccount).filter(PaperAccount.id == order.account_id).with_for_update().first()
+            acct = locked_account or db.query(PaperAccount).filter(PaperAccount.id == order.account_id).with_for_update().first()
             if acct:
                 # Calculate remaining reserved cash to release
                 remaining_qty = order.quantity_units - order.filled_quantity_units
                 price = order.limit_price_units or 0
-                fee = (remaining_qty * price * 5) // 10000
+                fee = (remaining_qty * price * 5) // 10000 + (2000 if remaining_qty == order.quantity_units else 0)
                 release_amount = (remaining_qty * price) + fee
+                paper_reserved = PaperService._orchestration_order_reservation(db, order)
+                if paper_reserved is not None:
+                    release_amount = paper_reserved
                 release_amount = min(release_amount, acct.reserved_cash_units)
 
                 acct.reserved_cash_units = max(0, acct.reserved_cash_units - release_amount)
@@ -737,9 +763,7 @@ class PaperService:
 
     @staticmethod
     def step_runtime(db: Session, runtime_id: str, owner_id: str, step_count: int = 1) -> Dict[str, Any]:
-        runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == runtime_id, StrategyRuntime.owner_id == owner_id).first()
-        if not runtime:
-            raise ResourceNotFoundError(f"Runtime '{runtime_id}' not found.")
+        runtime = PaperService._lock_manual_runtime(db, runtime_id, owner_id)
         if runtime.status != RuntimeStatus.RUNNING.value:
             raise ValueError(f"Cannot step runtime in status '{runtime.status}'. Must be RUNNING.")
 
@@ -911,13 +935,28 @@ class PaperService:
         }
 
     @staticmethod
+    def _orchestration_order_reservation(db: Session, order: Order) -> Optional[int]:
+        """Read this paper order's outstanding reservation while holding its account lock."""
+        intent = db.query(OrderIntent).filter(
+            OrderIntent.id == order.intent_id, OrderIntent.owner_id == order.owner_id,
+        ).one()
+        if intent.evaluation_id is None:
+            return None
+        db.flush()
+        return db.query(func.coalesce(func.sum(AccountLedgerEntry.reserved_cash_delta_units), 0)).filter(
+            AccountLedgerEntry.order_id == order.id,
+            AccountLedgerEntry.owner_id == order.owner_id,
+            AccountLedgerEntry.account_id == order.account_id,
+        ).scalar()
+
+    @staticmethod
     def _apply_fill(db: Session, runtime: StrategyRuntime, fill: FillResult, inst_spec: InstrumentSpec) -> None:
-        order = db.query(Order).filter(Order.id == fill.order_id).with_for_update().first()
-        acct = db.query(PaperAccount).filter(PaperAccount.id == order.account_id).with_for_update().first()
+        acct = db.query(PaperAccount).filter(PaperAccount.id == runtime.account_id).with_for_update().first()
         pos = db.query(PaperPosition).filter(
             PaperPosition.account_id == acct.id,
             PaperPosition.instrument_id == inst_spec.instrument_id
         ).with_for_update().first()
+        order = db.query(Order).filter(Order.id == fill.order_id).with_for_update().first()
 
         if not pos:
             pos = PaperPosition(
@@ -1000,8 +1039,12 @@ class PaperService:
 
         if order.side == OrderSide.BUY.value:
             # Deduct cash & release reservation
+            paper_reserved = PaperService._orchestration_order_reservation(db, order)
             acct.total_cash_units -= (fill_cost + fill.fee_units)
             reserved_released = min(fill_cost + fill.fee_units, acct.reserved_cash_units)
+            if paper_reserved is not None:
+                prior_remaining = order.quantity_units - order.filled_quantity_units + fill.fill_quantity_units
+                reserved_released = paper_reserved * fill.fill_quantity_units // prior_remaining
             acct.reserved_cash_units -= reserved_released
 
             l1 = AccountLedgerEntry(
@@ -1076,7 +1119,7 @@ class PaperService:
                     if acct:
                         remaining_qty = o.quantity_units - o.filled_quantity_units
                         price = o.limit_price_units or 0
-                        fee = (remaining_qty * price * 5) // 10000
+                        fee = (remaining_qty * price * 5) // 10000 + (2000 if remaining_qty == o.quantity_units else 0)
                         release_amount = (remaining_qty * price) + fee
                         release_amount = min(release_amount, acct.reserved_cash_units)
                         acct.reserved_cash_units = max(0, acct.reserved_cash_units - release_amount)

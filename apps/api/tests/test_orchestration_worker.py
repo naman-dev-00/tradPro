@@ -1621,8 +1621,11 @@ class TestCliSafetyAudit:
 
 def _require_postgres():
     import os
-    db_url = os.getenv("DATABASE_URL", "")
+    db_url = os.getenv("POSTGRES_TEST_URL") or os.getenv("DATABASE_URL", "")
+    require_pg = os.getenv("REQUIRE_POSTGRES") == "true"
     if not db_url.startswith("postgresql"):
+        if require_pg:
+            pytest.fail("PostgreSQL configuration required in CI job (REQUIRE_POSTGRES=true) but not found (DATABASE_URL / POSTGRES_TEST_URL missing)")
         pytest.skip("PostgreSQL: CI-PENDING (no PostgreSQL test connection)")
     return db_url
 

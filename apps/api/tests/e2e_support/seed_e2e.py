@@ -155,7 +155,7 @@ def seed_e2e_database() -> Dict[str, Any]:
                             "type": "CONDITION",
                             "lhs": {"indicator": "SMA", "symbol": "SYNTH_REF", "params": {"period": 14}},
                             "operator": "GREATER_THAN",
-                            "rhs": {"type": "NUMBER", "value": 100.0}
+                            "rhs": {"type": "NUMBER", "value": 100}
                         }
                     ]
                 },
@@ -168,8 +168,8 @@ def seed_e2e_database() -> Dict[str, Any]:
                     "type": "PAPER_TRADE",
                     "risk_config": {
                         "max_position_size": 10000,
-                        "stop_loss_pct": 2.0,
-                        "take_profit_pct": 5.0,
+                        "stop_loss_pct": 2,
+                        "take_profit_pct": 5,
                         "validity_window": 5
                     }
                 }
@@ -197,6 +197,115 @@ def seed_e2e_database() -> Dict[str, Any]:
                 "available_cash": "100000.00"
             }
         }
+
+        # Create starter orchestration runtime for editor in READY status
+        import datetime
+        import uuid
+        from src.models import (
+            ProviderConnection,
+            ProviderInstrumentMapping,
+            StrategyActionPolicy,
+            RiskPolicy,
+            StrategyRuntime,
+        )
+
+        action_policy_payload = {
+            "action_mappings": [
+                {
+                    "mapping_id": "act_e2e_buy",
+                    "instrument_id": "NIFTY_23000_PE",
+                    "side": "BUY",
+                    "order_type": "MARKET",
+                    "quantity_units": 1,
+                    "time_in_force": "DAY",
+                }
+            ]
+        }
+        action_pol = StrategyActionPolicy(
+            id=str(uuid.uuid4()),
+            owner_id=editor_user.id,
+            strategy_id=starter_strategy.id,
+            name="E2E Starter Action Policy",
+            version=1,
+            payload=action_policy_payload,
+        )
+        db.add(action_pol)
+
+        risk_policy_payload = {
+            "risk_config": {
+                "max_notional_per_order": 500000000,
+                "max_open_orders": 5,
+                "max_open_positions": 5,
+                "max_trades_per_day": 10,
+            }
+        }
+        risk_pol = RiskPolicy(
+            id=str(uuid.uuid4()),
+            owner_id=editor_user.id,
+            name="E2E Starter Risk Policy",
+            version=1,
+            payload=risk_policy_payload,
+        )
+        db.add(risk_pol)
+        db.flush()
+
+        conn = ProviderConnection(
+            id=str(uuid.uuid4()),
+            owner_id=editor_user.id,
+            provider_name="UPSTOX",
+            environment="SANDBOX",
+            credential_reference="e2e_cred_ref",
+            credential_version="v1",
+            status="CONFIGURED",
+        )
+        db.add(conn)
+        db.flush()
+
+        mapping = ProviderInstrumentMapping(
+            id=str(uuid.uuid4()),
+            owner_id=editor_user.id,
+            tradepro_instrument_id="synthetic_candidate_option_pe_23000_15m",
+            provider_instrument_token="256265",
+            exchange="NSE",
+            segment="OPTION",
+            symbol="NIFTY_23000_PE",
+            lot_size_units=1,
+            tick_size_units=5,
+            freeze_quantity_units=1800,
+            verification_status="VERIFIED",
+            mapping_version=1,
+        )
+        db.add(mapping)
+        db.flush()
+
+        t_open = datetime.datetime(2026, 8, 28, 9, 15, tzinfo=datetime.timezone.utc)
+        t_close = datetime.datetime(2026, 8, 28, 15, 30, tzinfo=datetime.timezone.utc)
+        timeframe = "15m"
+
+        starter_runtime = StrategyRuntime(
+            id=str(uuid.uuid4()),
+            owner_id=editor_user.id,
+            strategy_id=starter_strategy.id,
+            account_id=starter_account.id,
+            action_policy_id=action_pol.id,
+            risk_policy_id=risk_pol.id,
+            dataset_id="synthetic_candidate_option_pe_23000_15m",
+            timeframe=timeframe,
+            trading_mode="PAPER",
+            status="READY",
+            version=1,
+            strategy_snapshot=starter_strategy.payload,
+            action_policy_snapshot=action_policy_payload,
+            risk_policy_snapshot=risk_policy_payload,
+            instrument_spec_snapshot={
+                "instrument_id": "synthetic_candidate_option_pe_23000_15m",
+                "price_scale": 2,
+                "lot_size_units": 1,
+                "tick_size_units": 5,
+            },
+        )
+        db.add(starter_runtime)
+        db.flush()
 
         db.commit()
 

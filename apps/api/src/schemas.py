@@ -277,6 +277,7 @@ class StrategyRuntimeResponse(BaseModel):
     last_processed_candle_timestamp: Optional[datetime.datetime] = None
     consecutive_errors: int
     version: int
+    instrument_id: Optional[str] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -506,8 +507,9 @@ class OrchestrationConsentSubmission(BaseModel):
     acknowledged_replay_open_at: datetime.datetime
     acknowledged_replay_close_at: datetime.datetime
     acknowledged_dataset_ids: List[str] = Field(..., min_length=1, max_length=2)
-    confirm_prohibition_of_live_trading: bool = True
-    confirm_internal_mock_only: bool = True
+    confirm_prohibition_of_live_trading: bool
+    confirm_internal_mock_only: Optional[bool] = None
+    confirm_internal_paper_execution: Optional[bool] = None
 
 
 class OrchestrationDatasetRef(BaseModel):
@@ -525,6 +527,7 @@ class OrchestrationConfigCreateRequest(BaseModel):
     strategy_version: int = Field(1, gt=0)
     datasets: List[OrchestrationDatasetRef] = Field(..., min_length=1, max_length=2)
     provider_mapping_id: str = Field(..., min_length=1, max_length=36)
+    execution_policy: Optional[Literal["INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"]] = "INTERNAL_MOCK_ONLY"
     consent: OrchestrationConsentSubmission
 
 
@@ -532,7 +535,8 @@ class OrchestrationActivationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     consent_version: str = Field("fixture_consent_v1", max_length=50)
     acknowledged_execution_policy: str = Field("INTERNAL_MOCK_ONLY", max_length=50)
-    confirm_internal_mock_only: bool = True
+    confirm_internal_mock_only: Optional[bool] = None
+    confirm_internal_paper_execution: Optional[bool] = None
 
 
 class OrchestrationConfigResponse(BaseModel):

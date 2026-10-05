@@ -97,6 +97,7 @@ jobs:
           APP_ENV: test
           DATABASE_URL: postgresql://tradepro_ci:tradepro_ci_password@127.0.0.1:5432/tradepro_test
           POSTGRES_TEST_URL: postgresql://tradepro_ci:tradepro_ci_password@127.0.0.1:5432/tradepro_test
+          REQUIRE_POSTGRES: "true"
         run: |
           python -m pytest
 
