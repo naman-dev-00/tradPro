@@ -111,6 +111,8 @@ def consent_fingerprint(
     }
     if execution_policy == "INTERNAL_PAPER" or consent_schema_version == "fixture_paper_consent_v1":
         payload["explicit_internal_paper_confirmation"] = bool(extra_kwargs.get("explicit_internal_paper_confirmation", True))
+    elif execution_policy == "EXTERNAL_SANDBOX_DISPATCH" or consent_schema_version == "sandbox_consent_v1":
+        payload["explicit_sandbox_broker_confirmation"] = bool(extra_kwargs.get("explicit_sandbox_broker_confirmation", True))
     else:
         payload["explicit_internal_mock_confirmation"] = bool(explicit_internal_mock_confirmation)
     return _fingerprint("orchestration_consent_v1", payload)

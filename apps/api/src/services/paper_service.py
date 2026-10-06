@@ -652,16 +652,16 @@ class PaperService:
         # Explicit dispatch routing (INTERNAL_PAPER vs EXTERNAL_SANDBOX_DISPATCH)
         runtime = db.query(StrategyRuntime).filter(StrategyRuntime.id == order.runtime_id).first()
         orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == runtime.id).first() if runtime else None
-        is_orch = (
-            (orch_cfg is not None)
-            or (runtime is not None and runtime.trading_mode == TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+        is_orch_fixture = (
+            (runtime is not None and runtime.trading_mode == TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+            or (orch_cfg is not None and orch_cfg.source_type == "FIXTURE_REPLAY")
         )
 
-        if is_orch:
+        if is_orch_fixture:
             if orch_cfg:
                 assert_orchestration_execution_is_internal_only(orch_cfg)
             cancel_path = "INTERNAL_PAPER"
-        elif runtime and runtime.trading_mode == TradingMode.BROKER_SANDBOX.value:
+        elif (runtime and runtime.trading_mode == TradingMode.BROKER_SANDBOX.value) or (orch_cfg and orch_cfg.execution_policy == "EXTERNAL_SANDBOX_DISPATCH"):
             cancel_path = "EXTERNAL_SANDBOX_DISPATCH"
         elif runtime and runtime.trading_mode == TradingMode.PAPER.value:
             cancel_path = "INTERNAL_PAPER"
@@ -669,7 +669,7 @@ class PaperService:
             cancel_path = "INTERNAL_PAPER"
 
         if cancel_path == "EXTERNAL_SANDBOX_DISPATCH":
-            if is_orch:
+            if is_orch_fixture:
                 raise TransmissionProhibitedError("Attempted to queue external CANCEL outbox for orchestration fixture runtime.")
             # Sandbox mode: do NOT immediately confirm CANCELLED or release cash!
             # Queue a CANCEL outbox record. Cash is released upon confirmed provider cancellation or manual resolution.
@@ -1309,16 +1309,16 @@ class PaperService:
 
         # Passed risk -> Explicit dispatch routing (INTERNAL_PAPER vs EXTERNAL_SANDBOX_DISPATCH)
         orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == runtime.id).first() if runtime else None
-        is_orch = (
-            (orch_cfg is not None)
-            or (runtime.trading_mode == TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+        is_orch_fixture = (
+            (runtime.trading_mode == TradingMode.BROKER_SANDBOX_RECORDED_FIXTURE.value)
+            or (orch_cfg is not None and orch_cfg.source_type == "FIXTURE_REPLAY")
         )
 
-        if is_orch:
+        if is_orch_fixture:
             if orch_cfg:
                 assert_orchestration_execution_is_internal_only(orch_cfg)
             execution_route = "INTERNAL_PAPER"
-        elif runtime.trading_mode == TradingMode.BROKER_SANDBOX.value:
+        elif runtime.trading_mode == TradingMode.BROKER_SANDBOX.value or (orch_cfg and orch_cfg.execution_policy == "EXTERNAL_SANDBOX_DISPATCH"):
             execution_route = "EXTERNAL_SANDBOX_DISPATCH"
         elif runtime.trading_mode == TradingMode.PAPER.value:
             execution_route = "INTERNAL_PAPER"
@@ -1328,7 +1328,7 @@ class PaperService:
         if execution_route == "INTERNAL_PAPER":
             initial_status = OrderStatus.ACCEPTED.value
         elif execution_route == "EXTERNAL_SANDBOX_DISPATCH":
-            if is_orch:
+            if is_orch_fixture:
                 raise TransmissionProhibitedError("Orchestration fixtures are strictly forbidden from external sandbox dispatch")
             initial_status = OrderStatus.PENDING_SUBMISSION.value
 
@@ -1390,7 +1390,7 @@ class PaperService:
 
         # If external sandbox dispatch: create submission outbox record
         if execution_route == "EXTERNAL_SANDBOX_DISPATCH":
-            if is_orch:
+            if is_orch_fixture:
                 raise TransmissionProhibitedError("Attempted to create SubmissionOutbox for orchestration fixture runtime.")
             frozen_mapping = (runtime.instrument_spec_snapshot or {}).get("provider_mapping")
             if not frozen_mapping or "provider_instrument_token" not in frozen_mapping:

@@ -84,22 +84,6 @@ class MarketDataForbiddenError(MarketDataError):
 
 # --- Data Models ---
 
-class MarketDataCandle(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    timestamp: datetime.datetime = Field(..., description="Normalized UTC timestamp for candle open")
-    open: Decimal = Field(..., description="Exact open price quantized to scale")
-    high: Decimal = Field(..., description="Exact high price quantized to scale")
-    low: Decimal = Field(..., description="Exact low price quantized to scale")
-    close: Decimal = Field(..., description="Exact close price quantized to scale")
-    open_units: int = Field(..., description="Scaled integer representation of open price")
-    high_units: int = Field(..., description="Scaled integer representation of high price")
-    low_units: int = Field(..., description="Scaled integer representation of low price")
-    close_units: int = Field(..., description="Scaled integer representation of close price")
-    volume: int = Field(..., ge=0, description="Volume traded in this candle")
-    is_closed: bool = Field(True, description="Strictly True for completed historical candles")
-
-
 class MarketDataProvenance(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -115,6 +99,23 @@ class MarketDataProvenance(BaseModel):
     completeness: Literal["COMPLETE", "INCOMPLETE", "UNKNOWN"] = Field("UNKNOWN", description="Completeness classification")
     is_complete_series: bool = Field(False, description="Strictly True only when completeness is COMPLETE")
     warnings: List[str] = Field(default_factory=list, description="Diagnostic warnings e.g. duplicates dropped, gaps found")
+
+
+class MarketDataCandle(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    timestamp: datetime.datetime = Field(..., description="Normalized UTC timestamp for candle open")
+    open: Decimal = Field(..., description="Exact open price quantized to scale")
+    high: Decimal = Field(..., description="Exact high price quantized to scale")
+    low: Decimal = Field(..., description="Exact low price quantized to scale")
+    close: Decimal = Field(..., description="Exact close price quantized to scale")
+    open_units: int = Field(..., description="Scaled integer representation of open price")
+    high_units: int = Field(..., description="Scaled integer representation of high price")
+    low_units: int = Field(..., description="Scaled integer representation of low price")
+    close_units: int = Field(..., description="Scaled integer representation of close price")
+    volume: int = Field(..., ge=0, description="Volume traded in this candle")
+    is_closed: bool = Field(True, description="Strictly True for completed historical candles")
+    provenance: Optional[MarketDataProvenance] = Field(None, description="Optional Phase 5 provider provenance")
 
 
 class MarketDataInstrument(BaseModel):

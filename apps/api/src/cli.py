@@ -261,6 +261,32 @@ def cmd_evaluation_worker(args):
     )
     worker.run(max_runs=args.max_runs)
 
+def cmd_provider_evaluation_worker(args):
+    import os
+    app_env = os.environ.get("APP_ENV", "development").lower()
+    if app_env == "production":
+        print("Error: Provider evaluation worker execution is strictly prohibited in production.", file=sys.stderr)
+        sys.exit(1)
+
+    # In test mode, guard disposable database target
+    if app_env == "test":
+        db_url = os.environ.get("DATABASE_URL", "")
+        from src.database_safety import reject_development_test_target, require_disposable_target
+        reject_development_test_target(db_url)
+        require_disposable_target(db_url)
+
+    # Validate argument bounds
+    validate_worker_args(args)
+
+    from src.engine.provider_execution.worker import ProviderEvaluationWorker
+    worker = ProviderEvaluationWorker(
+        worker_id=args.worker_id,
+        batch_size=args.batch_size,
+        lease_duration_seconds=args.lease_duration,
+        poll_interval_seconds=args.poll_interval,
+    )
+    worker.run(max_runs=args.max_runs)
+
 def main():
     parser = argparse.ArgumentParser(description="TradePro Administrative CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -282,6 +308,15 @@ def main():
     orch_worker_p.add_argument("--worker-id", default=None, help="Explicit worker ID identifier")
     orch_worker_p.add_argument("--max-runs", type=int, default=None, help="Maximum worker loop iterations (for testing)")
     orch_worker_p.set_defaults(func=cmd_evaluation_worker)
+
+    # provider-evaluation-worker
+    prov_worker_p = subparsers.add_parser("provider-evaluation-worker", help="Run the Provider Evaluation worker")
+    prov_worker_p.add_argument("--batch-size", type=int, default=10, help="Batch size for claiming provider runtimes")
+    prov_worker_p.add_argument("--lease-duration", type=int, default=30, help="Lease duration in seconds")
+    prov_worker_p.add_argument("--poll-interval", type=float, default=1.0, help="Poll interval in seconds")
+    prov_worker_p.add_argument("--worker-id", default=None, help="Explicit worker ID identifier")
+    prov_worker_p.add_argument("--max-runs", type=int, default=None, help="Maximum worker loop iterations (for testing)")
+    prov_worker_p.set_defaults(func=cmd_provider_evaluation_worker)
 
     # users group
     users_parser = subparsers.add_parser("users", help="User administration commands")

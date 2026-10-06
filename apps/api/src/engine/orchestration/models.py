@@ -13,7 +13,7 @@ from .fingerprint import canonical_json
 MAX_UNITS = 9_000_000_000_000_000
 MAX_EVIDENCE = 65536
 TIMEFRAME_SECONDS = {"5m": 300, "15m": 900}
-Identifier = Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:/-]+$")]
+Identifier = Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:/| -]+$")]
 ResourceID = Annotated[str, Field(min_length=1, max_length=36, pattern=r"^[A-Za-z0-9_-]+$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Timeframe = Literal["5m", "15m"]
@@ -24,6 +24,8 @@ Scale = Annotated[int, Field(strict=True, ge=0, le=8)]
 
 class CandleSourceType(str, Enum):
     FIXTURE_REPLAY = "FIXTURE_REPLAY"
+    PROVIDER_SANDBOX = "PROVIDER_SANDBOX"
+    PROVIDER_UPSTOX_V3 = "PROVIDER_UPSTOX_V3"
 
 
 class SeriesRole(str, Enum):
@@ -35,6 +37,7 @@ class ActionOutcome(str, Enum):
     NO_ACTION = "NO_ACTION"
     REJECTED = "REJECTED"
     ACCEPTED_INTERNAL = "ACCEPTED_INTERNAL"
+    ACCEPTED_SANDBOX = "ACCEPTED_SANDBOX"
 
 
 class RiskOutcome(str, Enum):
@@ -94,16 +97,16 @@ class OrchestrationSnapshot(FrozenContract):
     provider_mapping: ProviderMappingIdentity
     source_type: CandleSourceType = CandleSourceType.FIXTURE_REPLAY
     source_namespace: Identifier
-    datasets: Annotated[tuple[DatasetProvenance, ...], Field(min_length=1, max_length=2)]
+    datasets: Annotated[tuple[DatasetProvenance, ...], Field(min_length=0, max_length=2)] = ()
     timeframe: Timeframe
-    source_policy_version: Literal["packaged_alignment_v1"] = "packaged_alignment_v1"
+    source_policy_version: Literal["packaged_alignment_v1", "provider_completed_v1"] = "packaged_alignment_v1"
     alignment_offset_seconds: Annotated[int, Field(strict=True, ge=0)]
     replay_open_at: datetime
     replay_close_at: datetime
-    engine_version: Identifier
-    indicator_engine_version: Identifier
+    engine_version: Identifier = "1.0.0"
+    indicator_engine_version: Identifier = "1.0.0"
     orchestration_policy_version: Literal["1"] = "1"
-    execution_policy: Literal["INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"] = "INTERNAL_MOCK_ONLY"
+    execution_policy: Literal["INTERNAL_MOCK_ONLY", "INTERNAL_PAPER", "EXTERNAL_SANDBOX_DISPATCH"] = "INTERNAL_MOCK_ONLY"
     external_transmission_allowed: Literal[False] = False
 
     @field_validator("strategy_snapshot", "action_policy_snapshot", "risk_policy_snapshot", "instrument_specification", mode="before")
@@ -118,9 +121,10 @@ class OrchestrationSnapshot(FrozenContract):
             raise ValueError("Replay bounds must increase")
         for boundary in (self.replay_open_at, self.replay_close_at):
             require_alignment(boundary, seconds, self.alignment_offset_seconds)
-        roles = [dataset.series_role for dataset in self.datasets]
-        if len(set(roles)) != len(roles) or SeriesRole.REFERENCE not in roles:
-            raise ValueError("Require one reference and at most one subject series")
+        if self.source_type == CandleSourceType.FIXTURE_REPLAY:
+            roles = [dataset.series_role for dataset in self.datasets]
+            if len(set(roles)) != len(roles) or SeriesRole.REFERENCE not in roles:
+                raise ValueError("Require one reference and at most one subject series")
         if len(canonical_json(self.model_dump(mode="python"))) > 262144:
             raise ValueError("Complete snapshot exceeds persistence limit")
         return self
@@ -150,7 +154,7 @@ class CompletedCandle(FrozenContract):
     instrument_id: Identifier
     timeframe: Timeframe
     series_role: SeriesRole
-    source_policy_version: Literal["packaged_alignment_v1"] = "packaged_alignment_v1"
+    source_policy_version: Literal["packaged_alignment_v1", "provider_completed_v1"] = "packaged_alignment_v1"
     alignment_offset_seconds: Annotated[int, Field(strict=True, ge=0)]
     open_at: datetime
     close_at: datetime

@@ -38,6 +38,7 @@ from src.engine.orchestration.models import (
 from src.engine.orchestration.source_policy import (
     _APPROVED,
     freeze_packaged_snapshot,
+    freeze_provider_snapshot,
     packaged_alignment,
 )
 from src.engine.orchestration.transmission_gate import (
@@ -207,44 +208,62 @@ class OrchestrationService:
         if global_ks or user_ks:
             raise ValueError("Cannot create orchestration configuration while kill switch is active.")
 
-        # 4. Validate Datasets against approved manifest
+        # 4. Validate Datasets against approved manifest (only required for FIXTURE_REPLAY)
         if payload.timeframe not in ("5m", "15m"):
             raise ValueError(f"Unsupported timeframe '{payload.timeframe}'. Authoritative Phase 1 supported timeframes are: '5m', '15m'.")
         if payload.timeframe != runtime.timeframe:
             raise ValueError(f"Payload timeframe '{payload.timeframe}' does not match runtime timeframe '{runtime.timeframe}'")
 
-        dataset_dicts: List[Dict[str, Any]] = []
-        dataset_ids_set = set()
-        has_reference = False
-        for d in payload.datasets:
-            dataset_id = d.dataset_id
-            if dataset_id not in _APPROVED:
-                raise ValueError(f"Dataset '{dataset_id}' has no approved source policy")
-            policy = packaged_alignment(dataset_id)
-            if policy.timeframe != payload.timeframe:
-                raise ValueError(f"Dataset '{dataset_id}' timeframe '{policy.timeframe}' does not match requested timeframe '{payload.timeframe}'")
-            entry = get_dataset_entry(dataset_id)
-            if not entry:
-                raise ValueError(f"Dataset '{dataset_id}' not found in manifest")
-
-            role = SeriesRole(d.series_role)
-            if role == SeriesRole.REFERENCE:
-                has_reference = True
-            dataset_ids_set.add(dataset_id)
-            dataset_dicts.append({
-                "dataset_id": dataset_id,
-                "checksum": entry.dataset_checksum,
-                "instrument_id": entry.instrument_id,
-                "series_role": role.value,
-            })
-
-        if not has_reference:
-            raise ValueError("Datasets must contain exactly one REFERENCE series")
-
-        # 5. User-Submitted Structured Consent Validation (Server does not manufacture consent!)
         consent = payload.consent
         exec_policy = getattr(payload, "execution_policy", None) or consent.acknowledged_execution_policy
-        if exec_policy not in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"):
+        source_type = getattr(payload, "source_type", None) or consent.acknowledged_source_type
+
+        dataset_dicts: List[Dict[str, Any]] = []
+        dataset_ids_set = set()
+
+        if exec_policy == "EXTERNAL_SANDBOX_DISPATCH":
+            if source_type not in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3"):
+                raise ValueError(f"Unsupported source type '{source_type}' for EXTERNAL_SANDBOX_DISPATCH")
+            if runtime.trading_mode != "BROKER_SANDBOX":
+                raise ValueError(f"Runtime trading_mode is '{runtime.trading_mode}' (must be 'BROKER_SANDBOX')")
+            # For provider execution, datasets can be empty
+            for d in (payload.datasets or []):
+                dataset_ids_set.add(d.dataset_id)
+                dataset_dicts.append({
+                    "dataset_id": d.dataset_id,
+                    "checksum": hashlib.sha256(d.dataset_id.encode()).hexdigest(),
+                    "instrument_id": mapping.tradepro_instrument_id,
+                    "series_role": d.series_role,
+                })
+        else:
+            has_reference = False
+            for d in payload.datasets:
+                dataset_id = d.dataset_id
+                if dataset_id not in _APPROVED:
+                    raise ValueError(f"Dataset '{dataset_id}' has no approved source policy")
+                policy = packaged_alignment(dataset_id)
+                if policy.timeframe != payload.timeframe:
+                    raise ValueError(f"Dataset '{dataset_id}' timeframe '{policy.timeframe}' does not match requested timeframe '{payload.timeframe}'")
+                entry = get_dataset_entry(dataset_id)
+                if not entry:
+                    raise ValueError(f"Dataset '{dataset_id}' not found in manifest")
+
+                role = SeriesRole(d.series_role)
+                if role == SeriesRole.REFERENCE:
+                    has_reference = True
+                dataset_ids_set.add(dataset_id)
+                dataset_dicts.append({
+                    "dataset_id": dataset_id,
+                    "checksum": entry.dataset_checksum,
+                    "instrument_id": entry.instrument_id,
+                    "series_role": role.value,
+                })
+
+            if not has_reference:
+                raise ValueError("Datasets must contain exactly one REFERENCE series")
+
+        # 5. User-Submitted Structured Consent Validation (Server does not manufacture consent!)
+        if exec_policy not in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER", "EXTERNAL_SANDBOX_DISPATCH"):
             raise ValueError(f"Unsupported execution policy '{exec_policy}'")
 
         if exec_policy == "INTERNAL_MOCK_ONLY":
@@ -254,6 +273,8 @@ class OrchestrationService:
                 raise ValueError("Consent must explicitly acknowledge INTERNAL_MOCK_ONLY execution policy")
             if consent.confirm_internal_mock_only is not True:
                 raise ValueError("Consent must explicitly confirm internal mock execution")
+            if consent.acknowledged_source_type != "FIXTURE_REPLAY":
+                raise ValueError("Consent must explicitly acknowledge FIXTURE_REPLAY source type")
         elif exec_policy == "INTERNAL_PAPER":
             if consent.consent_version != "fixture_paper_consent_v1":
                 raise ValueError("Unsupported consent policy version for INTERNAL_PAPER. Expected 'fixture_paper_consent_v1'")
@@ -261,9 +282,18 @@ class OrchestrationService:
                 raise ValueError("Consent must explicitly acknowledge INTERNAL_PAPER execution policy")
             if consent.confirm_internal_paper_execution is not True:
                 raise ValueError("Consent must explicitly confirm internal paper execution")
+            if consent.acknowledged_source_type != "FIXTURE_REPLAY":
+                raise ValueError("Consent must explicitly acknowledge FIXTURE_REPLAY source type")
+        elif exec_policy == "EXTERNAL_SANDBOX_DISPATCH":
+            if consent.consent_version != "sandbox_consent_v1":
+                raise ValueError("Unsupported consent policy version for EXTERNAL_SANDBOX_DISPATCH. Expected 'sandbox_consent_v1'")
+            if consent.acknowledged_execution_policy != "EXTERNAL_SANDBOX_DISPATCH":
+                raise ValueError("Consent must explicitly acknowledge EXTERNAL_SANDBOX_DISPATCH execution policy")
+            if consent.confirm_external_sandbox_dispatch is not True:
+                raise ValueError("Consent must explicitly confirm external sandbox dispatch")
+            if consent.acknowledged_source_type not in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3"):
+                raise ValueError("Consent must explicitly acknowledge PROVIDER_SANDBOX or PROVIDER_UPSTOX_V3 source type")
 
-        if consent.acknowledged_source_type != "FIXTURE_REPLAY":
-            raise ValueError("Consent must explicitly acknowledge FIXTURE_REPLAY source type")
         if consent.acknowledged_timeframe != payload.timeframe:
             raise ValueError("Consent acknowledged timeframe does not match requested timeframe")
         if utc(consent.acknowledged_replay_open_at) != utc(payload.replay_open_at) or utc(consent.acknowledged_replay_close_at) != utc(payload.replay_close_at):
@@ -303,8 +333,6 @@ class OrchestrationService:
             "lot_size_units": 1,
             "tick_size_units": 5,
         }
-        # Provider identity is frozen separately; never copy transport metadata
-        # from InstrumentSpec's optional provider_mapping into evidence.
         inst_spec = {key: value for key, value in inst_spec.items() if key != "provider_mapping"}
 
         material = {
@@ -314,7 +342,7 @@ class OrchestrationService:
             "risk_policy_snapshot": risk_snap,
             "instrument_specification": inst_spec,
             "provider_mapping": mapping_identity,
-            "source_type": CandleSourceType.FIXTURE_REPLAY,
+            "source_type": CandleSourceType(source_type),
             "datasets": dataset_dicts,
             "timeframe": payload.timeframe,
             "replay_open_at": utc(payload.replay_open_at),
@@ -325,7 +353,10 @@ class OrchestrationService:
             "external_transmission_allowed": False,
         }
 
-        snapshot = freeze_packaged_snapshot(confirmed_user=user, runtime=runtime, material=material)
+        if exec_policy == "EXTERNAL_SANDBOX_DISPATCH":
+            snapshot = freeze_provider_snapshot(confirmed_user=user, runtime=runtime, material=material)
+        else:
+            snapshot = freeze_packaged_snapshot(confirmed_user=user, runtime=runtime, material=material)
         snap_fingerprint = orchestration_snapshot_v1(snapshot)
 
         # Check if config already exists for this runtime
@@ -473,17 +504,27 @@ class OrchestrationService:
 
         # 3. Source and Policy Gate
         if config:
-            source_valid = (
-                config.source_type == "FIXTURE_REPLAY"
-                and config.execution_policy in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER")
-            )
+            if config.execution_policy == "EXTERNAL_SANDBOX_DISPATCH":
+                source_valid = (
+                    config.source_type in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3")
+                    and runtime.trading_mode == "BROKER_SANDBOX"
+                )
+                if not source_valid:
+                    reasons.append("Orchestration source must be PROVIDER_SANDBOX or PROVIDER_UPSTOX_V3 with trading_mode BROKER_SANDBOX")
+                expected_c_ver = "sandbox_consent_v1"
+            else:
+                source_valid = (
+                    config.source_type == "FIXTURE_REPLAY"
+                    and config.execution_policy in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER")
+                )
+                if not source_valid:
+                    reasons.append("Orchestration source must be FIXTURE_REPLAY and execution policy INTERNAL_MOCK_ONLY or INTERNAL_PAPER")
+                expected_c_ver = "fixture_paper_consent_v1" if config.execution_policy == "INTERNAL_PAPER" else "fixture_consent_v1"
+
             gates["source_policy_gate"] = source_valid
-            if not source_valid:
-                reasons.append("Orchestration source must be FIXTURE_REPLAY and execution policy INTERNAL_MOCK_ONLY or INTERNAL_PAPER")
 
             # Validate consent binding
             expected_c_fp = config_consent_fingerprint(config)
-            expected_c_ver = "fixture_paper_consent_v1" if config.execution_policy == "INTERNAL_PAPER" else "fixture_consent_v1"
             consent_valid = (config.consent_fingerprint == expected_c_fp and config.consent_policy_version == expected_c_ver)
             gates["consent_binding_gate"] = consent_valid
             if not consent_valid:
@@ -544,8 +585,18 @@ class OrchestrationService:
         trans_safe = False
         if config:
             try:
-                assert_orchestration_execution_is_internal_only(config)
-                trans_safe = True
+                if config.execution_policy == "EXTERNAL_SANDBOX_DISPATCH":
+                    if config.source_type not in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3"):
+                        raise ValueError(f"Invalid source_type '{config.source_type}' for sandbox dispatch")
+                    if runtime.trading_mode != "BROKER_SANDBOX":
+                        raise ValueError(f"Runtime trading_mode '{runtime.trading_mode}' is not BROKER_SANDBOX")
+                    snap_dict = json.loads(config.snapshot_json) if isinstance(config.snapshot_json, str) else config.snapshot_json
+                    if snap_dict.get("external_transmission_allowed") is True:
+                        raise ValueError("Live external broker transmission is strictly prohibited")
+                    trans_safe = True
+                else:
+                    assert_orchestration_execution_is_internal_only(config)
+                    trans_safe = True
             except Exception as e:
                 reasons.append(f"Transmission prohibition check failed: {e}")
         gates["transmission_prohibition_gate"] = trans_safe
@@ -684,15 +735,20 @@ class OrchestrationService:
             raise ResourceNotFoundError(f"Orchestration configuration for runtime '{runtime_id}' not found.")
 
         if isinstance(payload, dict):
-            c_ver = payload.get("consent_version") or payload.get("policy_version") or ("fixture_paper_consent_v1" if config.execution_policy == "INTERNAL_PAPER" else "fixture_consent_v1")
+            c_ver = payload.get("consent_version") or payload.get("policy_version") or (
+                "sandbox_consent_v1" if config.execution_policy == "EXTERNAL_SANDBOX_DISPATCH"
+                else ("fixture_paper_consent_v1" if config.execution_policy == "INTERNAL_PAPER" else "fixture_consent_v1")
+            )
             ack_pol = payload.get("acknowledged_execution_policy", config.execution_policy)
             conf_mock = payload.get("confirm_internal_mock_only")
             conf_paper = payload.get("confirm_internal_paper_execution")
+            conf_sandbox = payload.get("confirm_external_sandbox_dispatch")
             payload = OrchestrationActivationRequest(
                 consent_version=c_ver,
                 acknowledged_execution_policy=ack_pol,
                 confirm_internal_mock_only=conf_mock,
                 confirm_internal_paper_execution=conf_paper,
+                confirm_external_sandbox_dispatch=conf_sandbox,
             )
 
         # 3. Canonical request hash covering all authoritative dimensions:
@@ -710,6 +766,7 @@ class OrchestrationService:
                 "acknowledged_execution_policy": payload.acknowledged_execution_policy,
                 "confirm_internal_mock_only": bool(payload.confirm_internal_mock_only),
                 "confirm_internal_paper_execution": bool(payload.confirm_internal_paper_execution),
+                "confirm_external_sandbox_dispatch": bool(payload.confirm_external_sandbox_dispatch),
             },
         })
         req_hash = hashlib.sha256(canonical_req.encode("utf-8")).hexdigest()
@@ -740,6 +797,13 @@ class OrchestrationService:
                 raise ValueError("Activation requires explicit acknowledgement of INTERNAL_PAPER policy.")
             if payload.confirm_internal_paper_execution is not True:
                 raise ValueError("Explicit confirmation of internal paper execution is required.")
+        elif config.execution_policy == "EXTERNAL_SANDBOX_DISPATCH":
+            if payload.consent_version != "sandbox_consent_v1":
+                raise ValueError("Invalid consent policy version for EXTERNAL_SANDBOX_DISPATCH. Expected 'sandbox_consent_v1'.")
+            if payload.acknowledged_execution_policy != "EXTERNAL_SANDBOX_DISPATCH":
+                raise ValueError("Activation requires explicit acknowledgement of EXTERNAL_SANDBOX_DISPATCH policy.")
+            if payload.confirm_external_sandbox_dispatch is not True:
+                raise ValueError("Explicit confirmation of external sandbox dispatch is required.")
         else:
             raise ValueError(f"Unknown execution policy '{config.execution_policy}'")
 
@@ -768,7 +832,16 @@ class OrchestrationService:
             raise ValueError(f"Activation prerequisites failed: {'; '.join(readiness['reasons'])}")
 
         # 7. Transmission Prohibition Check
-        assert_orchestration_execution_is_internal_only(config)
+        if config.execution_policy == "EXTERNAL_SANDBOX_DISPATCH":
+            if config.source_type not in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3"):
+                raise ValueError(f"Invalid source_type '{config.source_type}' for sandbox dispatch")
+            if runtime.trading_mode != "BROKER_SANDBOX":
+                raise ValueError(f"Runtime trading_mode '{runtime.trading_mode}' is not BROKER_SANDBOX")
+            snap_dict = json.loads(config.snapshot_json) if isinstance(config.snapshot_json, str) else config.snapshot_json
+            if snap_dict.get("external_transmission_allowed") is True:
+                raise ValueError("Live external broker transmission is strictly prohibited")
+        else:
+            assert_orchestration_execution_is_internal_only(config)
 
         # 7b. Paper Account Watermark & Lock Hierarchy Check (if INTERNAL_PAPER)
         if config.execution_policy == "INTERNAL_PAPER":
@@ -950,7 +1023,16 @@ class OrchestrationService:
         ).with_for_update().first()
         if not config:
             raise ResourceNotFoundError(f"Configuration for runtime '{runtime_id}' not found.")
-        assert_orchestration_execution_is_internal_only(config)
+        if config.execution_policy == "EXTERNAL_SANDBOX_DISPATCH":
+            if config.source_type not in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3"):
+                raise ValueError(f"Invalid source_type '{config.source_type}' for sandbox dispatch")
+            if runtime.trading_mode != "BROKER_SANDBOX":
+                raise ValueError(f"Runtime trading_mode '{runtime.trading_mode}' is not BROKER_SANDBOX")
+            snap_dict = json.loads(config.snapshot_json) if isinstance(config.snapshot_json, str) else config.snapshot_json
+            if snap_dict.get("external_transmission_allowed") is True:
+                raise ValueError("Live external broker transmission is strictly prohibited")
+        else:
+            assert_orchestration_execution_is_internal_only(config)
 
         # Paper Account Watermark & Lock Hierarchy Check on Resume
         if config.execution_policy == "INTERNAL_PAPER":

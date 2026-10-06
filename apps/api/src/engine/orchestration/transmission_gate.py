@@ -21,6 +21,8 @@ def external_transmission_allowed(source_type: str, execution_policy: str) -> bo
     """
     if source_type == "FIXTURE_REPLAY" and execution_policy in ("INTERNAL_MOCK_ONLY", "INTERNAL_PAPER"):
         return False
+    if source_type in ("PROVIDER_SANDBOX", "PROVIDER_UPSTOX_V3") and execution_policy == "EXTERNAL_SANDBOX_DISPATCH":
+        return True
 
     # Fail closed for all other or unknown combinations
     raise ValueError(
