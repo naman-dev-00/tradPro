@@ -1075,7 +1075,7 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
                         "type": "PAPER_TRADE",
                         "risk_config": {"max_position_size": 100000, "stop_loss_pct": 2},
                     },
-                    "entry_conditions": {
+                    "global_conditions": {
                         "type": "CONDITION",
                         "id": "c1",
                         "lhs": {"indicator": "PRICE", "symbol": ""},
