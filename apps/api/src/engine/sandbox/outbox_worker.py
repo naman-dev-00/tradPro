@@ -27,6 +27,7 @@ from src.models import (
 )
 from src.engine.orchestration.transmission_gate import (
     assert_orchestration_execution_is_internal_only,
+    external_transmission_allowed,
     TransmissionProhibitedError,
 )
 from src.engine.paper.models import (
@@ -345,8 +346,16 @@ class SandboxOutboxWorker:
             is_orch_fixture = runtime and runtime.trading_mode == "BROKER_SANDBOX_RECORDED_FIXTURE"
             orch_cfg = db.query(RuntimeOrchestrationConfig).filter(RuntimeOrchestrationConfig.runtime_id == order.runtime_id).first()
 
-            if orch_cfg or is_orch_fixture:
-                if orch_cfg:
+            is_fixture_transmission_blocked = is_orch_fixture or (
+                orch_cfg is not None
+                and (
+                    orch_cfg.source_type == "FIXTURE_REPLAY"
+                    or not external_transmission_allowed(orch_cfg.source_type, orch_cfg.execution_policy)
+                )
+            )
+
+            if is_fixture_transmission_blocked:
+                if orch_cfg and orch_cfg.source_type == "FIXTURE_REPLAY":
                     assert_orchestration_execution_is_internal_only(orch_cfg)
 
                 # Safe Design B: Atomic conditional update via separate fresh session bound to the same engine.

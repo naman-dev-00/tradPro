@@ -15,8 +15,8 @@ from src.engine.orchestration.storage import ExactInteger
 from src.models import RuntimeOrchestrationConfig, CompletedCandleEvent, RuntimeEvaluation
 from tests.orchestration_support import seed_graph, seed_parent, NOW, OPEN, CLOSE
 
-HEAD = "0007_paper_execution"
-PREVIOUS = "0006_strategy_orchestrator"
+HEAD = "0008_provider_execution"
+PREVIOUS = "0007_paper_execution"
 BASE_PREVIOUS = "0005_upstox_sandbox"
 MODELS = (RuntimeOrchestrationConfig, CompletedCandleEvent, RuntimeEvaluation)
 TABLES = tuple(model.__tablename__ for model in MODELS)

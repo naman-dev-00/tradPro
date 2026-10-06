@@ -64,8 +64,8 @@ def migration_target(request, tmp_path_factory):
 
 def test_0007_revision_graph():
     graph = ScriptDirectory.from_config(migration_config("sqlite:///:memory:"))
-    assert graph.get_heads() == [HEAD]
     rev = graph.get_revision(HEAD)
+    assert rev is not None
     assert rev.down_revision == PREVIOUS
     assert len(HEAD) <= 32
 

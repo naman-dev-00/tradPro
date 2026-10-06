@@ -61,6 +61,25 @@ def freeze_packaged_snapshot(*, confirmed_user, runtime, material: dict) -> Orch
     )
 
 
+def freeze_provider_snapshot(*, confirmed_user, runtime, material: dict) -> OrchestrationSnapshot:
+    """Internal factory for provider-driven execution snapshots."""
+    forbidden = {"owner_id", "runtime_id", "alignment_offset_seconds", "source_policy_version", "source_namespace"}
+    if forbidden & material.keys():
+        raise ValueError("Identity and source policy must be server-derived")
+    if confirmed_user.id != runtime.owner_id or not confirmed_user.is_active:
+        raise ValueError("Confirmed user must own the runtime")
+    source_type = material.get("source_type")
+    source_ns = "provider.sandbox.nse" if source_type == "PROVIDER_SANDBOX" else "provider.upstox.v3"
+    return OrchestrationSnapshot(
+        **material,
+        owner_id=runtime.owner_id,
+        runtime_id=runtime.id,
+        source_namespace=source_ns,
+        source_policy_version="provider_completed_v1",
+        alignment_offset_seconds=0,
+    )
+
+
 def prepare_configuration(*, confirmed_user, runtime, material: dict, confirmed: bool, clock):
     """Prepare an unsaved internal record with bounded, server-derived consent.
 

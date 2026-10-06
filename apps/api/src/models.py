@@ -750,10 +750,10 @@ class RuntimeOrchestrationConfig(Base):
         UniqueConstraint("owner_id", "runtime_id", "source_namespace", "timeframe", "source_policy_version", "alignment_offset_seconds", name="uq_orch_config_source"),
         ForeignKeyConstraint(["owner_id", "runtime_id"], ["strategy_runtimes.owner_id", "strategy_runtimes.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_config_runtime"),
         ForeignKeyConstraint(["owner_id"], ["users.id"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_config_confirming_user"),
-        CheckConstraint("source_policy_version = 'packaged_alignment_v1' AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_config_alignment"),
-        CheckConstraint("source_type = 'FIXTURE_REPLAY'", name="ck_orch_config_source"),
-        CheckConstraint("execution_policy IN ('INTERNAL_MOCK_ONLY', 'INTERNAL_PAPER')", name="ck_orch_config_execution"),
-        CheckConstraint("(((execution_policy = 'INTERNAL_MOCK_ONLY' AND consent_policy_version = 'fixture_consent_v1') OR (execution_policy = 'INTERNAL_PAPER' AND consent_policy_version = 'fixture_paper_consent_v1')) AND length(consent_fingerprint) = 64)", name="ck_orch_config_consent"),
+        CheckConstraint("source_policy_version IN ('packaged_alignment_v1', 'provider_completed_v1') AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_config_alignment"),
+        CheckConstraint("source_type IN ('FIXTURE_REPLAY', 'PROVIDER_SANDBOX', 'PROVIDER_UPSTOX_V3')", name="ck_orch_config_source"),
+        CheckConstraint("execution_policy IN ('INTERNAL_MOCK_ONLY', 'INTERNAL_PAPER', 'EXTERNAL_SANDBOX_DISPATCH')", name="ck_orch_config_execution"),
+        CheckConstraint("(((execution_policy = 'INTERNAL_MOCK_ONLY' AND consent_policy_version = 'fixture_consent_v1') OR (execution_policy = 'INTERNAL_PAPER' AND consent_policy_version = 'fixture_paper_consent_v1') OR (execution_policy = 'EXTERNAL_SANDBOX_DISPATCH' AND consent_policy_version = 'sandbox_consent_v1')) AND length(consent_fingerprint) = 64)", name="ck_orch_config_consent"),
         CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_config_timeframe"),
         CheckConstraint("length(id) BETWEEN 1 AND 36 AND length(owner_id) BETWEEN 1 AND 36 AND length(runtime_id) BETWEEN 1 AND 36", name="ck_orch_config_ids"),
         CheckConstraint("length(source_namespace) BETWEEN 1 AND 100", name="ck_orch_config_namespace"),
@@ -808,9 +808,9 @@ class CompletedCandleEvent(Base):
         UniqueConstraint("owner_id", "runtime_id", "source_namespace", "series_role", "dataset_id", "source_event_id", name="uq_orch_candle_event"),
         UniqueConstraint("owner_id", "runtime_id", "series_role", "instrument_id", "timeframe", "close_at", name="uq_orch_candle_interval"),
         ForeignKeyConstraint(["owner_id", "runtime_id", "source_namespace", "timeframe", "source_policy_version", "alignment_offset_seconds"], ["runtime_orchestration_configs.owner_id", "runtime_orchestration_configs.runtime_id", "runtime_orchestration_configs.source_namespace", "runtime_orchestration_configs.timeframe", "runtime_orchestration_configs.source_policy_version", "runtime_orchestration_configs.alignment_offset_seconds"], onupdate="RESTRICT", ondelete="RESTRICT", name="fk_orch_candle_config"),
-        CheckConstraint("source_type = 'FIXTURE_REPLAY'", name="ck_orch_candle_source"),
+        CheckConstraint("source_type IN ('FIXTURE_REPLAY', 'PROVIDER_SANDBOX', 'PROVIDER_UPSTOX_V3')", name="ck_orch_candle_source"),
         CheckConstraint("series_role IN ('REFERENCE', 'SUBJECT')", name="ck_orch_candle_role"),
-        CheckConstraint("source_policy_version = 'packaged_alignment_v1' AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_candle_alignment"),
+        CheckConstraint("source_policy_version IN ('packaged_alignment_v1', 'provider_completed_v1') AND alignment_offset_seconds >= 0 AND alignment_offset_seconds < CASE timeframe WHEN '5m' THEN 300 ELSE 900 END AND alignment_offset_seconds = CAST(alignment_offset_seconds AS INTEGER)", name="ck_orch_candle_alignment"),
         CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_candle_timeframe"),
         CheckConstraint("revision = 1 AND is_closed IS TRUE", name="ck_orch_candle_final"),
         CheckConstraint("length(id) BETWEEN 1 AND 36 AND length(owner_id) BETWEEN 1 AND 36 AND length(runtime_id) BETWEEN 1 AND 36", name="ck_orch_candle_ids"),
@@ -857,9 +857,9 @@ class RuntimeEvaluation(Base):
         CheckConstraint("length(snapshot_fingerprint) = 64 AND length(evaluation_fingerprint) = 64", name="ck_orch_eval_hashes"),
         CheckConstraint("timeframe IN ('5m', '15m')", name="ck_orch_eval_timeframe"),
         CheckConstraint("evaluation_status IN ('TRUE', 'FALSE', 'UNAVAILABLE', 'INVALID')", name="ck_orch_eval_status"),
-        CheckConstraint("action_outcome IN ('NO_ACTION', 'REJECTED', 'ACCEPTED_INTERNAL')", name="ck_orch_eval_action"),
+        CheckConstraint("action_outcome IN ('NO_ACTION', 'REJECTED', 'ACCEPTED_INTERNAL', 'ACCEPTED_SANDBOX')", name="ck_orch_eval_action"),
         CheckConstraint("risk_outcome IN ('NOT_RUN', 'REJECTED', 'ACCEPTED')", name="ck_orch_eval_risk"),
-        CheckConstraint("(action_outcome = 'ACCEPTED_INTERNAL' AND risk_outcome = 'ACCEPTED' AND no_order_reason IS NULL AND evaluation_status IN ('TRUE', 'FALSE')) OR (action_outcome != 'ACCEPTED_INTERNAL' AND no_order_reason IS NOT NULL AND length(no_order_reason) BETWEEN 1 AND 64)", name="ck_orch_eval_outcome"),
+        CheckConstraint("(action_outcome IN ('ACCEPTED_INTERNAL', 'ACCEPTED_SANDBOX') AND risk_outcome = 'ACCEPTED' AND no_order_reason IS NULL AND evaluation_status IN ('TRUE', 'FALSE')) OR (action_outcome NOT IN ('ACCEPTED_INTERNAL', 'ACCEPTED_SANDBOX') AND no_order_reason IS NOT NULL AND length(no_order_reason) BETWEEN 1 AND 64)", name="ck_orch_eval_outcome"),
         CheckConstraint("length(required_candles_json) BETWEEN 2 AND 2048 AND length(audit_json) BETWEEN 2 AND 65536 AND length(risk_summary_json) BETWEEN 2 AND 65536", name="ck_orch_eval_evidence"),
         CheckConstraint("finalized_at >= close_at", name="ck_orch_eval_time"),
         Index("ix_orch_eval_history", "owner_id", "runtime_id", "close_at"),
@@ -920,17 +920,18 @@ def _validate_orchestration_config(mapper, connection, target):
     if len(target.snapshot_json) > 262144:
         raise ValueError("Snapshot exceeds limit")
     snapshot = OrchestrationSnapshot.model_validate_json(target.snapshot_json)
-    for dataset in snapshot.datasets:
-        policy = packaged_alignment(dataset.dataset_id)
-        entry = get_dataset_entry(dataset.dataset_id)
-        if (policy.version, policy.timeframe, policy.offset_seconds) != (
-                snapshot.source_policy_version, snapshot.timeframe, snapshot.alignment_offset_seconds):
-            raise ValueError("Snapshot disagrees with approved source alignment")
-        role_val = dataset.series_role.value if hasattr(dataset.series_role, "value") else str(dataset.series_role)
-        expected_role = entry.category.value
-        role_matches = (role_val == expected_role) or (role_val == "REFERENCE" and entry.dataset_id == "synthetic_short_insufficient_5m")
-        if (dataset.checksum, dataset.instrument_id) != (entry.dataset_checksum, entry.instrument_id) or not role_matches:
-            raise ValueError("Snapshot disagrees with approved manifest provenance")
+    if snapshot.source_type == "FIXTURE_REPLAY":
+        for dataset in snapshot.datasets:
+            policy = packaged_alignment(dataset.dataset_id)
+            entry = get_dataset_entry(dataset.dataset_id)
+            if (policy.version, policy.timeframe, policy.offset_seconds) != (
+                    snapshot.source_policy_version, snapshot.timeframe, snapshot.alignment_offset_seconds):
+                raise ValueError("Snapshot disagrees with approved source alignment")
+            role_val = dataset.series_role.value if hasattr(dataset.series_role, "value") else str(dataset.series_role)
+            expected_role = entry.category.value
+            role_matches = (role_val == expected_role) or (role_val == "REFERENCE" and entry.dataset_id == "synthetic_short_insufficient_5m")
+            if (dataset.checksum, dataset.instrument_id) != (entry.dataset_checksum, entry.instrument_id) or not role_matches:
+                raise ValueError("Snapshot disagrees with approved manifest provenance")
     for field in ("owner_id", "runtime_id", "timeframe", "source_type", "source_namespace",
                   "source_policy_version", "alignment_offset_seconds", "execution_policy",
                   "replay_open_at", "replay_close_at"):

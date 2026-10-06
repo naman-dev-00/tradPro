@@ -140,19 +140,23 @@ TradePro has completed foundational deterministic orchestration (Phase 1–4) th
   - Integration with Milestone 6B transactional outbox queue (`submission_outbox`).
   - Execution mode `BROKER_SANDBOX` driven by incoming provider candle intervals.
   - Automated `PLACE` and `CANCEL` order submission for verified instrument mappings.
-  - Conservative rate limiting and 429 reconciliation worker.
+  - Conservative 429 and rate-limiting reconciliation:
+    - For read-only provider queries (market data candle acquisition): HTTP 429 represents non-mutating rate limiting where non-transmission of orders is certain; requests back off with `Retry-After` and retry safely.
+    - For mutating order submissions (`PLACE` and `CANCEL`): HTTP 429 from the broker does not prove pre-order rejection or rule out order acceptance by the broker gateway. Blind retransmission is strictly prohibited. Outbox entries receiving 429 transition immediately to `RECONCILIATION_REQUIRED` unless non-transmission is verified with certainty prior to submission. Automated broker retransmission without status confirmation is prohibited to prevent duplicate executions.
   - Polling-based order status verification and fill simulation against sandbox broker.
-  - Conservative ambiguous-outcome handling: Any ambiguous transmission outcome (timeouts, network drops, unconfirmed 5xx) immediately transitions outbox entry to `RECONCILIATION_REQUIRED`. Automatic broker retransmission without status confirmation is strictly prohibited to prevent duplicate executions.
+  - Conservative ambiguous-outcome handling: Any ambiguous transmission outcome (timeouts, network drops, unconfirmed 5xx, or unconfirmed 429) immediately transitions outbox entry to `RECONCILIATION_REQUIRED`.
 - **Dependencies:**
   - Phase 5 read-only market data adapter and normalizer.
   - Phase 4 strategy orchestrator worker and transition lifecycle.
   - Milestone 6B sandbox outbox worker and safety gates.
 - **Acceptance Criteria:**
-  - Evaluator processes completed provider candles without temporal leakage.
+  - Evaluator processes completed provider candles without temporal leakage (no look-ahead; `close_at <= clock.now_utc()`).
   - Outbox transitions adhere strictly to `PENDING` -> `CLAIMED` -> `DELIVERED` / `RECONCILIATION_REQUIRED`.
-  - Rate limiting (429) triggers exponential backoff without dropping orders.
+  - Durable pre-transmission marker (`transmission_started_at`) is set before outbound transmission; expired leases fail closed to `RECONCILIATION_REQUIRED` if the marker is set.
+  - Rate limiting (429) on order submissions triggers fail-closed reconciliation, preventing duplicate executions; retries occur only when non-transmission is certain.
   - Ambiguous outcomes freeze further automatic transmission until authoritative reconciliation.
   - Sandbox broker rejections do not corrupt internal paper ledger.
+  - Zero live broker transmission is enforced at all times.
 - **Outstanding Items:**
   - Partial fill reconciliation and order modification handling.
   - Handling of market closure and holidays in provider feed.

@@ -381,7 +381,9 @@ def test_completeness_and_boundary_conditions():
     assert any("missing start date 2026-10-01" in w for w in res_hist.warnings)
 
     # 4. Partial contiguous day returns UNKNOWN with is_complete_series=False
-    res_partial = normalizer.normalize_candles([
+    clock_fixed = datetime.datetime(2026, 10, 5, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    norm_fixed = MarketDataNormalizer(clock=lambda: clock_fixed)
+    res_partial = norm_fixed.normalize_candles([
         ["2026-10-05T09:15:00+05:30", 100.0, 105.0, 95.0, 102.0, 100, 0],
         ["2026-10-05T09:20:00+05:30", 102.0, 106.0, 101.0, 105.0, 100, 0],
     ], "5m", mode="intraday")
