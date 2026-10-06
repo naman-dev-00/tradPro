@@ -3058,9 +3058,14 @@ def test_postgresql_provider_execution_concurrent_evaluations(tmp_path):
         now = datetime.datetime(2026, 10, 6, 10, 0, 0, tzinfo=datetime.timezone.utc)
 
         with maker() as db:
+            uname = f"pg_conc_{uuid.uuid4().hex[:8]}"
+            uemail = f"{uname}@example.com"
             user = User(
                 id=str(uuid.uuid4()),
-                email=f"pg_conc_{uuid.uuid4().hex[:8]}@example.com",
+                username=uname,
+                normalized_username=uname.lower(),
+                email=uemail,
+                normalized_email=uemail.lower(),
                 hashed_password="pw",
                 role="EDITOR",
                 is_active=True,
