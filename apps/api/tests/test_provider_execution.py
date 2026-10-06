@@ -1056,7 +1056,7 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
                 id=str(uuid.uuid4()),
                 owner_id=user.id,
                 name="Provider Sandbox Account",
-                total_cash_units=100000000,
+                total_cash_units=100000000000,
                 reserved_cash_units=0,
                 currency="INR",
             )
