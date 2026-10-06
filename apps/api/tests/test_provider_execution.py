@@ -1096,12 +1096,12 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
                         "mapping_id": "auto_entry_1",
                         "rule_target": "GLOBAL",
                         "trigger_status": "ON_TRUE",
-                        "instrument_id": "NSE_EQ|INE002A01018",
+                        "instrument_id": "NSE_INDEX|Nifty 50",
                         "side": "BUY",
                         "intent_type": "ENTRY",
                         "quantity": 10,
                         "order_type": "LIMIT",
-                        "limit_price": 2500,
+                        "limit_price": 25000,
                     },
                 },
                 is_active=True,
@@ -1131,11 +1131,11 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
             mapping = ProviderInstrumentMapping(
                 id=str(uuid.uuid4()),
                 owner_id=user.id,
-                tradepro_instrument_id="NSE_EQ|INE002A01018",
-                provider_instrument_token="NSE_EQ|INE002A01018",
-                exchange="NSE_EQ",
-                segment="EQUITY",
-                symbol="RELIANCE",
+                tradepro_instrument_id="NSE_INDEX|Nifty 50",
+                provider_instrument_token="NSE_INDEX|Nifty 50",
+                exchange="NSE",
+                segment="INDEX",
+                symbol="NIFTY50",
                 lot_size_units=1,
                 tick_size_units=5,
                 freeze_quantity_units=1800,
@@ -1155,13 +1155,13 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
                 account_id=acct.id,
                 status="RUNNING",
                 trading_mode="BROKER_SANDBOX",
-                dataset_id="NSE_EQ|INE002A01018",
+                dataset_id="NSE_INDEX|Nifty 50",
                 timeframe="5m",
                 strategy_snapshot=strat.payload,
                 action_policy_snapshot=policy.payload,
                 risk_policy_snapshot=risk_policy.payload,
                 instrument_spec_snapshot={
-                    "instrument_id": "NSE_EQ|INE002A01018",
+                    "instrument_id": "NSE_INDEX|Nifty 50",
                     "quantity_scale": 0,
                     "price_scale": 4,
                     "currency_scale": 4,
@@ -1180,7 +1180,7 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
                 action_policy_snapshot=policy.payload,
                 risk_policy_snapshot=risk_policy.payload,
                 instrument_specification={
-                    "instrument_id": "NSE_EQ|INE002A01018",
+                    "instrument_id": "NSE_INDEX|Nifty 50",
                     "quantity_scale": 0,
                     "price_scale": 4,
                     "currency_scale": 4,
@@ -1231,7 +1231,7 @@ def test_postgresql_provider_execution_parity(tmp_path, monkeypatch):
             db.add(orch_cfg)
             db.commit()
 
-            c = make_valid_candle(now - datetime.timedelta(minutes=5), open_p=2500.0, high_p=2510.0, low_p=2490.0, close_p=2500.0)
+            c = make_valid_candle(now - datetime.timedelta(minutes=5), open_p=25000.0, high_p=25050.0, low_p=24950.0, close_p=25000.0)
             eng = ProviderExecutionEngine(clock=lambda: now)
             res = eng.evaluate_runtime_candle(
                 db,
