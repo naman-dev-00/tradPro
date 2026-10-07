@@ -28,6 +28,11 @@ from sqlalchemy.orm import Session
 
 from src.engine.evaluator import RuleEvaluator
 from src.engine.market_data.contracts import MarketDataCandle, MarketDataProvenance, TIMEFRAME_TO_SECONDS
+from src.engine.market_data.market_schedule import (
+    MarketSessionStatus,
+    get_market_session_status,
+    is_candle_stale,
+)
 from src.engine.market_data.provenance import compute_market_data_fingerprint
 from src.engine.models import Candle
 from src.engine.orchestration.evidence import config_consent_fingerprint
@@ -124,9 +129,11 @@ class ProviderExecutionEngine:
         self,
         rule_evaluator: Optional[RuleEvaluator] = None,
         clock: Optional[Callable[[], datetime.datetime]] = None,
+        enforce_market_schedule: bool = True,
     ):
         self.rule_evaluator = rule_evaluator or RuleEvaluator()
         self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
+        self.enforce_market_schedule = enforce_market_schedule
 
     def evaluate_runtime_candle(
         self,
@@ -334,6 +341,81 @@ class ProviderExecutionEngine:
                 allow_short=False,
                 is_tradable=True,
             )
+
+        # --- GATE 6.5: Market Session Calendar & Candle Freshness Gate ---
+        if self.enforce_market_schedule:
+            # Check candle staleness against authoritative clock
+            max_staleness = (
+                risk_policy.get("max_price_staleness_seconds")
+                or (risk_policy.get("risk_config", {}).get("max_price_staleness_seconds") if isinstance(risk_policy.get("risk_config"), dict) else None)
+                or 900
+            )
+            if is_candle_stale(candle_close, now, max_staleness_seconds=int(max_staleness)):
+                action_res = self._process_no_action(
+                    db=db,
+                    runtime=runtime,
+                    orch_cfg=orch_cfg,
+                    mapping=mapping,
+                    inst_spec=inst_spec,
+                    candle=canonical_candle,
+                    candle_close=candle_close,
+                    now=now,
+                    rule_status=rule_status,
+                    provenance_fingerprint=single_candle_fp,
+                    reason_code="PRICE_STALE",
+                )
+                db.flush()
+                return ProviderEvaluationResult(
+                    runtime_id=runtime.id,
+                    owner_id=owner_id,
+                    candle_timestamp=canonical_candle.timestamp,
+                    evaluated_at=now,
+                    rule_status=rule_status,
+                    action_decision=action_res["action_decision"],
+                    risk_decision=action_res["risk_decision"],
+                    order_ids=action_res.get("order_ids", []),
+                    outbox_ids=action_res.get("outbox_ids", []),
+                    reason_code=action_res["reason_code"],
+                    details=action_res.get("details", {}),
+                )
+
+            # Check market session status (holidays, weekends, trading hours)
+            session_status = get_market_session_status(canonical_candle.timestamp)
+            if session_status != MarketSessionStatus.OPEN:
+                reason = (
+                    "MARKET_HOLIDAY"
+                    if session_status == MarketSessionStatus.HOLIDAY
+                    else "MARKET_CLOSED"
+                    if session_status == MarketSessionStatus.CLOSED
+                    else "SESSION_STATUS_UNKNOWN"
+                )
+                action_res = self._process_no_action(
+                    db=db,
+                    runtime=runtime,
+                    orch_cfg=orch_cfg,
+                    mapping=mapping,
+                    inst_spec=inst_spec,
+                    candle=canonical_candle,
+                    candle_close=candle_close,
+                    now=now,
+                    rule_status=rule_status,
+                    provenance_fingerprint=single_candle_fp,
+                    reason_code=reason,
+                )
+                db.flush()
+                return ProviderEvaluationResult(
+                    runtime_id=runtime.id,
+                    owner_id=owner_id,
+                    candle_timestamp=canonical_candle.timestamp,
+                    evaluated_at=now,
+                    rule_status=rule_status,
+                    action_decision=action_res["action_decision"],
+                    risk_decision=action_res["risk_decision"],
+                    order_ids=action_res.get("order_ids", []),
+                    outbox_ids=action_res.get("outbox_ids", []),
+                    reason_code=action_res["reason_code"],
+                    details=action_res.get("details", {}),
+                )
 
         # Determine if action conditions are satisfied
         entry_action = self._check_action_trigger(action_policy.get("entry_mapping"), rule_result)
@@ -1706,7 +1788,7 @@ class ProviderExecutionEngine:
         audit_data = {
             "result": rule_status,
             "condition_ids": [],
-            "rule_results": {"GLOBAL": rule_status},
+            "rule_results": {"GLOBAL": rule_status, "CANDIDATE": rule_status},
         }
         audit_json = canonical_json(audit_data)
 

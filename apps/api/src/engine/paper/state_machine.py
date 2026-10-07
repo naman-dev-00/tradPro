@@ -60,12 +60,15 @@ VALID_ORDER_TRANSITIONS: Dict[OrderStatus, Set[OrderStatus]] = {
     OrderStatus.CANCEL_PENDING: {
         OrderStatus.ACKNOWLEDGED,  # Safe dead-letter revert when cancel fails before transmission
         OrderStatus.CANCELLED,
+        OrderStatus.PARTIALLY_FILLED,  # Race: partial fill occurred while cancel was pending
         OrderStatus.FILLED,  # Race: fill occurred while cancel was pending
         OrderStatus.RECONCILIATION_REQUIRED,
         OrderStatus.ERROR,
     },
     OrderStatus.RECONCILIATION_REQUIRED: {
         OrderStatus.ACKNOWLEDGED,
+        OrderStatus.PARTIALLY_FILLED,  # Reconciliation discovered partial execution at broker
+        OrderStatus.FILLED,  # Reconciliation discovered full execution at broker
         OrderStatus.CANCELLED,
         OrderStatus.PROVIDER_REJECTED,
         OrderStatus.ERROR,

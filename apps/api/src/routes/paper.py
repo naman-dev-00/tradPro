@@ -604,6 +604,32 @@ def cancel_order(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
+
+@router.patch("/orders/{id}")
+@router.put("/orders/{id}")
+@router.post("/orders/{id}/modify")
+def modify_order_rejected(
+    id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Explicit architectural rejection of in-flight order modifications.
+    The transactional outbox model (ck_submission_outbox_action_type) strictly
+    restricts actions to PLACE and CANCEL to prevent asynchronous broker fill races.
+    """
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "ORDER_MODIFICATION_NOT_SUPPORTED",
+            "message": (
+                f"Order modification is not supported for order '{id}'. "
+                "The transactional outbox model strictly enforces atomic PLACE and CANCEL actions. "
+                "To modify an open order, cancel the existing order and place a new replacement order."
+            ),
+        },
+    )
+
+
 @router.get("/fills", response_model=List[FillResponse])
 def list_fills(
     account_id: Optional[str] = None,
