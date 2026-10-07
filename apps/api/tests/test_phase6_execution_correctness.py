@@ -798,9 +798,14 @@ def test_postgresql_concurrency_parity_disposable(tmp_path):
     with paper_test_database("postgresql", tmp_path / "pg.db") as (engine, _):
         Base.metadata.create_all(engine)
         with Session(engine) as session:
+            user_id = str(uuid.uuid4())
             user = User(
-                id=str(uuid.uuid4()),
+                id=user_id,
+                username="pg_user",
+                normalized_username="pg_user",
                 email="pg_user@tradepro.test",
+                normalized_email="pg_user@tradepro.test",
+                hashed_password=hash_password("Pass12345!"),
                 role="ADMIN",
                 is_active=True,
             )
@@ -832,7 +837,7 @@ def test_postgresql_concurrency_parity_disposable(tmp_path):
                 owner_id=user.id,
                 fill_qty_units=50,
                 fill_price_units=20000,
-                fill_idempotency_key="pg_fill_1",
+                provider_trade_id="pg_fill_1",
             )
             session.commit()
 
