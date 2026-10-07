@@ -797,18 +797,24 @@ def test_postgresql_concurrency_parity_disposable(tmp_path):
     """
     with paper_test_database("postgresql", tmp_path / "pg.db") as (engine, _):
         Base.metadata.create_all(engine)
-        with Session(engine) as session:
-            user_id = str(uuid.uuid4())
+        SessionPostgres = sessionmaker(bind=engine, autoflush=False)
+        with SessionPostgres() as session:
+            uid = uuid.uuid4().hex[:8]
+            uname = f"pg_user_{uid}"
+            uemail = f"{uname}@tradepro.test"
             user = User(
-                id=user_id,
-                username="pg_user",
-                normalized_username="pg_user",
-                email="pg_user@tradepro.test",
-                normalized_email="pg_user@tradepro.test",
+                id=str(uuid.uuid4()),
+                username=uname,
+                normalized_username=uname.lower(),
+                email=uemail,
+                normalized_email=uemail.lower(),
                 hashed_password=hash_password("Pass12345!"),
                 role="ADMIN",
                 is_active=True,
             )
+            session.add(user)
+            session.flush()
+
             acct = PaperAccount(
                 id=str(uuid.uuid4()),
                 owner_id=user.id,
@@ -817,7 +823,7 @@ def test_postgresql_concurrency_parity_disposable(tmp_path):
                 reserved_cash_units=1000000,
                 currency="INR",
             )
-            session.add_all([user, acct])
+            session.add(acct)
             session.flush()
 
             order = _create_test_order(
