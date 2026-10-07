@@ -1,13 +1,15 @@
+import datetime
 import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import httpx
 
 logger = logging.getLogger("tradepro.upstox_adapter")
 
-DEFAULT_UPSTOX_BASE_URL = "https://api-hft.upstox.com"
+DEFAULT_UPSTOX_SANDBOX_BASE_URL = "https://api-sandbox.upstox.com"
+DEFAULT_UPSTOX_BASE_URL = "https://api-sandbox.upstox.com"
 MAX_RETRY_AFTER_SECONDS = 30
 
 
@@ -55,6 +57,27 @@ class UpstoxCancelResult:
     raw_response: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class UpstoxOrderDetails:
+    provider_order_id: str
+    status: str
+    quantity: int
+    filled_quantity: int
+    price: float
+    average_price: float
+    raw_response: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class UpstoxTradeDetails:
+    trade_id: str
+    provider_order_id: str
+    quantity: int
+    price: float
+    trade_timestamp: Optional[datetime.datetime]
+    raw_response: Dict[str, Any]
+
+
 class UpstoxSandboxAdapter:
     """
     Upstox Sandbox Order Execution Adapter.
@@ -71,6 +94,22 @@ class UpstoxSandboxAdapter:
         self.base_url = (base_url or os.environ.get("UPSTOX_SANDBOX_BASE_URL") or DEFAULT_UPSTOX_BASE_URL).rstrip("/")
         self.transport = transport
         self.timeout = timeout
+
+    def is_sandbox_authoritative_trades_supported(self) -> bool:
+        """
+        Official Upstox Documentation Verification:
+        According to official Upstox Developer API documentation (https://upstox.com/developer/api-documentation),
+        the 'Sandbox enabled' flag is present ONLY on Order Management endpoints:
+        - Place Order V3 (POST /v3/order/place)
+        - Modify Order V3 (PUT /v3/order/modify)
+        - Cancel Order V3 (DELETE /v3/order/cancel)
+        - Place Multi Order (POST /v3/order/multi/place)
+
+        GET /v2/order/details and GET /v2/order/trades do NOT have the 'Sandbox enabled' flag.
+        Upstox Sandbox credentials (tokens from Sandbox apps) cannot retrieve authoritative
+        executed trade records. Therefore, authoritative fill trades are unsupported in sandbox.
+        """
+        return False
 
     def _get_client(self, token: str) -> httpx.Client:
         headers = {
@@ -135,6 +174,116 @@ class UpstoxSandboxAdapter:
             ) from e
 
         return self._handle_cancel_response(response, provider_order_id)
+
+    def get_order_details(self, provider_order_id: str, token: str) -> UpstoxOrderDetails:
+        """
+        Fetches order details from Upstox via GET /v2/order/details?order_id={provider_order_id}.
+        """
+        try:
+            with self._get_client(token) as client:
+                response = client.get(
+                    "/v2/order/details",
+                    params={"order_id": provider_order_id},
+                )
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError) as e:
+            logger.error("Network error fetching Upstox order details: %s", type(e).__name__)
+            raise UpstoxAmbiguousError(
+                f"Network error fetching order details: {type(e).__name__}",
+                original_exception=e,
+            ) from e
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except Exception as e:
+                raise UpstoxAmbiguousError("HTTP 200 received on order details but body was not valid JSON", original_exception=e) from e
+
+            if data.get("status") == "success" and "data" in data:
+                d = data["data"]
+                if isinstance(d, list) and len(d) > 0:
+                    d = d[0]
+                return UpstoxOrderDetails(
+                    provider_order_id=str(d.get("order_id", provider_order_id)),
+                    status=str(d.get("status", "")).lower(),
+                    quantity=int(d.get("quantity", 0)),
+                    filled_quantity=int(d.get("filled_quantity", 0)),
+                    price=float(d.get("price", 0.0)),
+                    average_price=float(d.get("average_price", 0.0)),
+                    raw_response=data,
+                )
+            raise UpstoxAmbiguousError(f"HTTP 200 received but response format unexpected: {data}")
+
+        if response.status_code == 429:
+            self._handle_conservative_429(response)
+
+        if 400 <= response.status_code < 500:
+            error_code, message = self._parse_error_body(response)
+            raise UpstoxClientError(status_code=response.status_code, error_code=error_code, message=message)
+
+        error_code, message = self._parse_error_body(response)
+        raise UpstoxAmbiguousError(f"Server error fetching order details: HTTP {response.status_code} [{error_code}]: {message}")
+
+    def get_order_trades(self, provider_order_id: str, token: str) -> List[UpstoxTradeDetails]:
+        """
+        Fetches executed trades for an order via GET /v2/order/trades?order_id={provider_order_id}.
+        """
+        try:
+            with self._get_client(token) as client:
+                response = client.get(
+                    "/v2/order/trades",
+                    params={"order_id": provider_order_id},
+                )
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError) as e:
+            logger.error("Network error fetching Upstox order trades: %s", type(e).__name__)
+            raise UpstoxAmbiguousError(
+                f"Network error fetching order trades: {type(e).__name__}",
+                original_exception=e,
+            ) from e
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except Exception as e:
+                raise UpstoxAmbiguousError("HTTP 200 received on order trades but body was not valid JSON", original_exception=e) from e
+
+            if data.get("status") == "success" and "data" in data:
+                raw_trades = data["data"]
+                if not isinstance(raw_trades, list):
+                    raw_trades = [raw_trades]
+                trades = []
+                for item in raw_trades:
+                    trade_id = str(item.get("trade_id", "")).strip()
+                    if not trade_id:
+                        continue
+                    ts_str = item.get("trade_timestamp")
+                    ts = None
+                    if ts_str:
+                        try:
+                            ts = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        except Exception:
+                            pass
+                    trades.append(
+                        UpstoxTradeDetails(
+                            trade_id=trade_id,
+                            provider_order_id=str(item.get("order_id", provider_order_id)),
+                            quantity=int(item.get("quantity", 0)),
+                            price=float(item.get("trade_price") or item.get("price", 0.0)),
+                            trade_timestamp=ts,
+                            raw_response=item,
+                        )
+                    )
+                return trades
+            raise UpstoxAmbiguousError(f"HTTP 200 received on order trades but response format unexpected: {data}")
+
+        if response.status_code == 429:
+            self._handle_conservative_429(response)
+
+        if 400 <= response.status_code < 500:
+            error_code, message = self._parse_error_body(response)
+            raise UpstoxClientError(status_code=response.status_code, error_code=error_code, message=message)
+
+        error_code, message = self._parse_error_body(response)
+        raise UpstoxAmbiguousError(f"Server error fetching order trades: HTTP {response.status_code} [{error_code}]: {message}")
 
     def _handle_place_response(self, response: httpx.Response) -> UpstoxPlaceResult:
         status_code = response.status_code

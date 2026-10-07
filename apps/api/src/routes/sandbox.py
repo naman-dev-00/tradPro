@@ -20,6 +20,12 @@ from src.schemas import (
 )
 from src.auth.dependencies import get_current_user, require_roles, require_csrf
 from src.auth.rate_limiter import rate_limiter
+from src.engine.sandbox.reconciliation import (
+    SandboxReconciliationEngine,
+    ReconciliationError,
+    OverfillError,
+    OrderModificationNotSupportedError,
+)
 from src.services.sandbox_service import (
     SandboxService,
     ResourceNotFoundError,
@@ -418,3 +424,51 @@ def resolve_reconciliation(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.post("/orders/{id}/sync")
+def sync_sandbox_order(
+    id: str,
+    current_user: User = Depends(require_roles("TRADER", "EDITOR", "ADMIN")),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+):
+    """
+    Server-side broker evidence ingestion and reconciliation:
+    Fetches authoritative order details and trade executions directly from Upstox broker,
+    validates connection, owner, provider order link, trade identity, quantity, price,
+    and cumulative status, then invokes SandboxReconciliationEngine in a safe transaction.
+    No client-provided fill or cancellation data is accepted.
+    """
+    rate_limiter.check_rate_limit(f"sandbox_sync:{current_user.id}", max_requests=30, window_seconds=60)
+    try:
+        result = SandboxService.sync_order_from_broker(db, id, current_user)
+        return result
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionDeniedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except InvalidOperationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except (ReconciliationError, OverfillError) as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.patch("/orders/{id}")
+@router.put("/orders/{id}")
+@router.post("/orders/{id}/modify")
+def modify_sandbox_order_rejected(
+    id: str,
+    current_user: User = Depends(get_current_user),
+):
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "ORDER_MODIFICATION_NOT_SUPPORTED",
+            "message": (
+                f"Order modification is not supported for order '{id}'. "
+                "The transactional outbox model strictly enforces atomic PLACE and CANCEL actions. "
+                "To modify an open order, cancel the existing order and place a new replacement order."
+            ),
+        },
+    )

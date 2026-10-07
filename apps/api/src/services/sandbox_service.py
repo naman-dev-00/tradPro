@@ -678,3 +678,250 @@ class SandboxService:
         )
         db.add(ledger)
         db.flush()
+
+    @staticmethod
+    def sync_order_from_broker(
+        db: Session,
+        order_id: str,
+        actor_user: User,
+        adapter: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Server-side broker evidence ingestion and reconciliation:
+        1. Validates actor authorization and ownership (identical 404 for missing/cross-owner).
+        2. Validates external order link (ExternalOrderLink linking order to Upstox provider_order_id).
+        3. Validates provider connection and access token.
+        4. Validates network safety toggle (blocks live network calls if UPSTOX_SANDBOX_NETWORK_ENABLED is false).
+        5. Fetches authoritative order details and trade executions directly from broker.
+        6. If the sandbox API cannot provide authoritative fill evidence, keeps automatic fill reconciliation
+           disabled and reports this as a limitation. Does not simulate authority by passing client or test data.
+        7. Validates broker trades: trade identity, quantity, price, and cumulative bounds.
+        8. Invokes SandboxReconciliationEngine within a safe database transaction.
+        9. Reconciles fills and cancellations atomically.
+        """
+        from src.engine.sandbox.upstox_adapter import (
+            UpstoxSandboxAdapter,
+            UpstoxAdapterError,
+        )
+        from src.engine.sandbox.reconciliation import (
+            SandboxReconciliationEngine,
+            ReconciliationError,
+            OverfillError,
+        )
+
+        # 1. Validate order and owner
+        order = db.query(Order).filter(Order.id == order_id).first()
+        if not order:
+            raise ResourceNotFoundError(f"Order '{order_id}' not found.")
+
+        configured_owner = os.environ.get("UPSTOX_SANDBOX_OWNER_ID", "")
+        if order.owner_id != actor_user.id:
+            if not (actor_user.role == "ADMIN" and configured_owner and order.owner_id == configured_owner):
+                raise ResourceNotFoundError(f"Order '{order_id}' not found.")
+
+        # 2. Validate external order link
+        ext_link = db.query(ExternalOrderLink).filter(
+            ExternalOrderLink.order_id == order.id,
+            ExternalOrderLink.owner_id == order.owner_id,
+            ExternalOrderLink.provider_name == "UPSTOX",
+        ).first()
+        if not ext_link or not ext_link.provider_order_id:
+            raise InvalidOperationError(
+                f"Order '{order_id}' has no external provider order link (never submitted to broker)."
+            )
+
+        provider_order_id = ext_link.provider_order_id
+
+        # 3. Validate provider connection & token
+        conn = db.query(ProviderConnection).filter(
+            ProviderConnection.owner_id == order.owner_id,
+            ProviderConnection.provider_name == "UPSTOX",
+        ).first()
+        token = os.environ.get("UPSTOX_SANDBOX_ACCESS_TOKEN", "").strip()
+        if not token:
+            raise InvalidOperationError("Upstox sandbox access token is not configured.")
+
+        # 4. Validate network safety toggle
+        network_enabled = os.environ.get("UPSTOX_SANDBOX_NETWORK_ENABLED", "false").strip().lower() == "true"
+        if not network_enabled and adapter is None:
+            raise InvalidOperationError(
+                "Sandbox network transmission is disabled by safety gate (UPSTOX_SANDBOX_NETWORK_ENABLED=false)."
+            )
+
+        active_adapter = adapter or UpstoxSandboxAdapter()
+
+        # 5. Check if provider adapter supports authoritative trades under sandbox credentials
+        if hasattr(active_adapter, "is_sandbox_authoritative_trades_supported") and not active_adapter.is_sandbox_authoritative_trades_supported():
+            logger.info(
+                "Upstox Sandbox API contract does not support GET /v2/order/details or GET /v2/order/trades "
+                "with sandbox credentials. Returning limitation without attempting live endpoints."
+            )
+            return {
+                "status": "LIMITATION_REPORTED",
+                "order_id": order.id,
+                "provider_order_id": provider_order_id,
+                "limitation": "AUTHORITATIVE_TRADES_UNAVAILABLE",
+                "message": (
+                    "Official Upstox documentation confirms GET /v2/order/details and GET /v2/order/trades "
+                    "are not sandbox-enabled. Authoritative fill trade evidence cannot be fetched with sandbox credentials. "
+                    "Automatic fill reconciliation remains disabled without attempting live endpoints."
+                ),
+                "broker_base_url": getattr(active_adapter, "base_url", "https://api-sandbox.upstox.com"),
+                "order_status": order.status,
+            }
+
+        # 6. Fetch broker evidence server-side
+        try:
+            order_details = active_adapter.get_order_details(provider_order_id, token)
+        except UpstoxAdapterError as e:
+            raise InvalidOperationError(f"Failed to fetch order details from provider: {str(e)}")
+
+        # Require order-details.order_id to equal the persisted ExternalOrderLink.provider_order_id
+        broker_order_id = getattr(order_details, "provider_order_id", None) or getattr(order_details, "order_id", None)
+        if not broker_order_id or str(broker_order_id).strip() != provider_order_id:
+            raise ReconciliationError(
+                f"Broker order details ID mismatch: expected '{provider_order_id}', "
+                f"got '{broker_order_id}'."
+            )
+
+        try:
+            trades_list = active_adapter.get_order_trades(provider_order_id, token)
+        except UpstoxAdapterError as e:
+            logger.warning("Authoritative trades unavailable from broker for order %s: %s", order_id, str(e))
+            return {
+                "status": "LIMITATION_REPORTED",
+                "order_id": order.id,
+                "provider_order_id": provider_order_id,
+                "limitation": "AUTHORITATIVE_TRADES_UNAVAILABLE",
+                "message": (
+                    "The sandbox provider API does not provide authoritative fill trade evidence for this order. "
+                    "Automatic fill reconciliation remains disabled. Order status unchanged."
+                ),
+                "broker_order_status": order_details.status,
+                "order_status": order.status,
+            }
+
+        broker_status = order_details.status.lower()
+        broker_filled_qty = order_details.filled_quantity
+
+        if broker_filled_qty > 0 and not trades_list:
+            logger.warning(
+                "Broker reported filled_quantity=%d for order %s but returned empty trades list",
+                broker_filled_qty, order_id,
+            )
+            return {
+                "status": "LIMITATION_REPORTED",
+                "order_id": order.id,
+                "provider_order_id": provider_order_id,
+                "limitation": "AUTHORITATIVE_TRADES_UNAVAILABLE",
+                "message": (
+                    "The sandbox provider API did not return authoritative trade execution records for positive "
+                    "filled quantity. Automatic fill reconciliation remains disabled."
+                ),
+                "broker_order_status": broker_status,
+                "order_status": order.status,
+            }
+
+        # 7. Validate broker evidence consistency before applying trades
+        # Validate EVERY trade in trades_list before applying any changes
+        seen_trades: Dict[str, Any] = {}
+        unique_trades = []
+        for t in trades_list:
+            t_id = getattr(t, "trade_id", None)
+            if not t_id or not str(t_id).strip():
+                raise ReconciliationError("Trade execution record has missing or empty trade_id.")
+            clean_t_id = str(t_id).strip()
+
+            t_order_id = getattr(t, "provider_order_id", None)
+            if not t_order_id or str(t_order_id).strip() != provider_order_id:
+                raise ReconciliationError(
+                    f"Broker trade '{clean_t_id}' order_id mismatch: expected '{provider_order_id}', "
+                    f"got '{t_order_id}'."
+                )
+
+            if t.quantity <= 0 or t.price <= 0:
+                raise ReconciliationError(
+                    f"Invalid trade details from broker: quantity={t.quantity}, price={t.price}"
+                )
+
+            # Check duplicate trade IDs with conflicting details within the batch
+            if clean_t_id in seen_trades:
+                prev_t = seen_trades[clean_t_id]
+                if prev_t.quantity != t.quantity or prev_t.price != t.price:
+                    raise ReconciliationError(
+                        f"Duplicate broker trade ID '{clean_t_id}' in batch with conflicting details: "
+                        f"first=(qty={prev_t.quantity}, price={prev_t.price}), "
+                        f"duplicate=(qty={t.quantity}, price={t.price})."
+                    )
+            else:
+                seen_trades[clean_t_id] = t
+                unique_trades.append(t)
+
+        total_trade_qty = sum(t.quantity for t in unique_trades)
+        if broker_filled_qty > 0 and total_trade_qty != broker_filled_qty:
+            raise ReconciliationError(
+                f"Conflicting broker evidence: Trade execution total ({total_trade_qty}) does not match "
+                f"broker order filled_quantity ({broker_filled_qty})."
+            )
+
+        if broker_filled_qty == 0 and total_trade_qty > 0:
+            raise ReconciliationError(
+                f"Conflicting broker evidence: Broker order filled_quantity is 0 but trade executions total ({total_trade_qty})."
+            )
+
+        if total_trade_qty > order.quantity_units:
+            raise OverfillError(
+                f"Broker evidence overfill: Broker trades total ({total_trade_qty}) exceeds "
+                f"order quantity ({order.quantity_units})."
+            )
+
+        # 8. Reconcile fills within safe database transaction
+        # Commit entire transaction on success, roll back on every error
+        reconciled_fills = []
+        try:
+            with db.begin_nested():
+                for t in unique_trades:
+                    price_units = int(Decimal(str(t.price)) * 10000)
+                    fill_record = SandboxReconciliationEngine.reconcile_fill(
+                        db=db,
+                        order_id=order.id,
+                        owner_id=order.owner_id,
+                        fill_qty_units=t.quantity,
+                        fill_price_units=price_units,
+                        fee_units=0,
+                        provider_trade_id=t.trade_id,
+                        provider_name="UPSTOX",
+                        fill_timestamp=t.trade_timestamp,
+                        actor="UPSTOX_SANDBOX_SYNC",
+                        notes=f"Server-side sync from provider trade {t.trade_id}",
+                    )
+                    reconciled_fills.append(fill_record.id)
+
+                # Check if broker confirmed cancellation
+                if broker_status in ("cancelled", "canceled") and order.filled_quantity_units < order.quantity_units:
+                    SandboxReconciliationEngine.reconcile_cancel(
+                        db=db,
+                        order_id=order.id,
+                        owner_id=order.owner_id,
+                        actor="UPSTOX_SANDBOX_SYNC",
+                        reason="BROKER_ORDER_CANCELLED",
+                        provider_name="UPSTOX",
+                    )
+
+                db.flush()
+
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        db.refresh(order)
+        return {
+            "status": "SUCCESS",
+            "order_id": order.id,
+            "provider_order_id": provider_order_id,
+            "order_status": order.status,
+            "filled_quantity_units": order.filled_quantity_units,
+            "trades_reconciled": len(reconciled_fills),
+            "reconciled_fill_ids": reconciled_fills,
+        }
