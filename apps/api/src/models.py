@@ -40,6 +40,11 @@ class UserSession(Base):
     is_revoked = Column(Boolean, nullable=False, default=False, server_default=text('false'), index=True)
     revoked_at = Column(UTCDateTime, nullable=True)
 
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_user_sessions_id_user"),
+    )
+
+
 
 class Strategy(Base):
     __tablename__ = "strategies"
@@ -564,20 +569,102 @@ class ProviderConnection(Base):
     owner_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
     provider_name = Column(String(50), nullable=False, default="UPSTOX")
     environment = Column(String(50), nullable=False, default="SANDBOX")
-    credential_reference = Column(String(100), nullable=False)
+    credential_reference = Column(String(100), nullable=False, default="oauth_token")
     credential_version = Column(String(50), nullable=False, default="v1")
     status = Column(String(50), nullable=False, default="CONFIGURED")
+    broker_user_id = Column(String(100), nullable=True)
+    account_name = Column(String(255), nullable=True)
+    broker_user_type = Column(String(50), nullable=True)
+    encrypted_access_token = Column(Text, nullable=True)
+    token_acquired_at = Column(UTCDateTime, nullable=True)
+    token_expires_at = Column(UTCDateTime, nullable=True)
+    token_scope = Column(String(255), nullable=True)
     last_successful_transmission_at = Column(UTCDateTime, nullable=True)
+    last_successful_refresh_at = Column(UTCDateTime, nullable=True)
     sanitized_error_code = Column(String(100), nullable=True)
+    version = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    credential_generation = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    authorization_fence = Column(String(64), nullable=True)
     created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("owner_id", "provider_name", "environment", name="uq_provider_conns_owner_prov_env"),
-        CheckConstraint("environment = 'SANDBOX'", name="ck_provider_connections_env_sandbox"),
+        UniqueConstraint("id", "owner_id", name="uq_provider_connections_id_owner"),
+        Index(
+            "uq_provider_connections_active_ucc",
+            "environment",
+            "broker_user_id",
+            unique=True,
+            postgresql_where=text("status = 'CONNECTED' AND broker_user_id IS NOT NULL"),
+            sqlite_where=text("status = 'CONNECTED' AND broker_user_id IS NOT NULL"),
+        ),
+        CheckConstraint("environment IN ('SANDBOX', 'LIVE')", name="ck_provider_connections_env"),
         CheckConstraint("provider_name = 'UPSTOX'", name="ck_provider_connections_provider_upstox"),
-        CheckConstraint("status IN ('CONFIGURED', 'DISABLED', 'ERROR')", name="ck_provider_connections_status"),
+        CheckConstraint("status IN ('CONFIGURED', 'DISABLED', 'ERROR', 'CONNECTED', 'DISCONNECTED', 'EXPIRED', 'NOT_CONFIGURED')", name="ck_provider_connections_status"),
     )
+
+
+class OAuthStateRecord(Base):
+    __tablename__ = "oauth_states"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    state_token = Column(String(64), nullable=False)
+    owner_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id = Column(String(36), nullable=False, index=True)
+    environment = Column(String(50), nullable=False, default="LIVE", server_default="LIVE")
+    redirect_uri = Column(String(512), nullable=False)
+    client_ip = Column(String(64), nullable=True)
+    authorization_fence = Column(String(64), nullable=True)
+    credential_generation = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    consumed = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    consumed_at = Column(UTCDateTime, nullable=True)
+    expires_at = Column(UTCDateTime, nullable=False, index=True)
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("environment IN ('SANDBOX', 'LIVE')", name="ck_oauth_states_env"),
+        UniqueConstraint("state_token", name="uq_oauth_states_state_token"),
+        ForeignKeyConstraint(
+            ["session_id", "owner_id"],
+            ["user_sessions.id", "user_sessions.user_id"],
+            name="fk_oauth_states_session_owner",
+            ondelete="CASCADE",
+        ),
+    )
+
+
+class BrokerSnapshot(Base):
+    __tablename__ = "broker_snapshots"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String(36), nullable=False, index=True)
+    connection_id = Column(String(36), nullable=False, index=True)
+    broker_user_id = Column(String(100), nullable=False)
+    environment = Column(String(50), nullable=False)
+    status = Column(String(50), nullable=False, default="ACTIVE", server_default="ACTIVE")
+    acquired_at_utc = Column(UTCDateTime, nullable=False, index=True)
+    funds_and_margins_json = Column(JSON, nullable=True)
+    holdings_json = Column(JSON, nullable=True)
+    positions_json = Column(JSON, nullable=True)
+    orders_json = Column(JSON, nullable=True)
+    raw_fingerprint = Column(String(64), nullable=False)
+    connection_version_at_fetch = Column(Integer, nullable=False)
+    credential_generation = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    created_at = Column(UTCDateTime, nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("environment IN ('SANDBOX', 'LIVE')", name="ck_broker_snapshots_env"),
+        CheckConstraint("status IN ('ACTIVE', 'SUPERSEDED', 'ERROR')", name="ck_broker_snapshots_status"),
+        ForeignKeyConstraint(
+            ["connection_id", "owner_id"],
+            ["provider_connections.id", "provider_connections.owner_id"],
+            name="fk_broker_snapshots_conn_owner",
+            ondelete="RESTRICT",
+        ),
+    )
+
+
 
 
 class ProviderInstrumentMapping(Base):

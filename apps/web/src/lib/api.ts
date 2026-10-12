@@ -1733,3 +1733,194 @@ export async function fetchMarketDataCandles(params: {
   }
   return res.json();
 }
+
+// --- Phase 7A: Broker Readiness & Read-Only Live Connection ---
+
+export interface BrokerAuthorizeUrlRequest {
+  environment?: "LIVE" | "SANDBOX";
+  redirect_uri?: string | null;
+}
+
+export interface BrokerAuthorizeUrlResponse {
+  authorization_url: string;
+  state: string;
+  environment: string;
+  expires_in_seconds: number;
+}
+
+export interface BrokerOAuthCallbackRequest {
+  code: string;
+  state: string;
+}
+
+export interface BrokerConnectionResponse {
+  provider: string;
+  environment: string;
+  status: "NOT_CONFIGURED" | "DISCONNECTED" | "PENDING_AUTH" | "CONNECTED" | "EXPIRED" | "ERROR";
+  broker_user_id_masked: string | null;
+  account_name: string | null;
+  token_valid: boolean;
+  token_expires_at: string | null;
+  last_successful_refresh_at: string | null;
+  version: number;
+  credential_generation: number;
+}
+
+export interface BrokerSnapshotSummary {
+  snapshot_id: string;
+  broker_user_id_masked: string;
+  environment: string;
+  acquired_at_utc: string;
+  freshness_seconds: number;
+  raw_fingerprint: string;
+  available_margin: string | null;
+  used_margin: string | null;
+  positions_count: number;
+  holdings_count: number;
+  orders_count: number;
+  credential_generation: number;
+}
+
+export interface BrokerPositionItem {
+  tradingsymbol?: string;
+  quantity?: number;
+  buy_amount?: number | string;
+  average_price?: number | string;
+  value?: number | string;
+  pnl?: number | string;
+  product?: string;
+  exchange?: string;
+  [key: string]: any;
+}
+
+export interface BrokerHoldingItem {
+  isin?: string;
+  company_name?: string;
+  tradingsymbol?: string;
+  quantity?: number;
+  average_price?: number | string;
+  close_price?: number | string;
+  pnl?: number | string;
+  [key: string]: any;
+}
+
+export interface BrokerOrderItem {
+  order_id?: string;
+  status?: string;
+  quantity?: number;
+  price?: number | string;
+  transaction_type?: string;
+  order_type?: string;
+  tradingsymbol?: string;
+  exchange?: string;
+  order_timestamp?: string;
+  [key: string]: any;
+}
+
+export interface BrokerSnapshotDetail {
+  id: string;
+  broker_user_id_masked: string;
+  environment: string;
+  status: string;
+  acquired_at_utc: string;
+  freshness_seconds: number;
+  raw_fingerprint: string;
+  funds_and_margins: any;
+  positions: BrokerPositionItem[];
+  holdings: BrokerHoldingItem[];
+  orders: BrokerOrderItem[];
+  credential_generation: number;
+}
+
+export interface BrokerReadinessGate {
+  gate_name: string;
+  status: "READY" | "BLOCKED" | "UNKNOWN";
+  details: string;
+  actionable_remedy: string | null;
+}
+
+export interface BrokerReadinessResponse {
+  overall_status: "READY_FOR_MONITORING" | "BLOCKED";
+  live_dispatch_enabled: boolean;
+  environment: string;
+  broker_user_id_masked: string | null;
+  evaluated_at: string;
+  gates: BrokerReadinessGate[];
+  actionable_blockers: string[];
+}
+
+export async function fetchBrokerConnection(environment: string = "LIVE"): Promise<BrokerConnectionResponse> {
+  const res = await apiFetch(`/api/v1/broker/connection?environment=${encodeURIComponent(environment)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch broker connection status");
+  }
+  return res.json();
+}
+
+export async function fetchBrokerAuthorizeUrl(
+  environment: string = "LIVE",
+  redirectUri?: string | null
+): Promise<BrokerAuthorizeUrlResponse> {
+  const res = await apiFetch("/api/v1/broker/auth/authorize-url", {
+    method: "POST",
+    body: JSON.stringify({ environment, redirect_uri: redirectUri ?? null }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to generate authorization URL");
+  }
+  return res.json();
+}
+
+export async function submitBrokerOAuthCallback(code: string, state: string): Promise<BrokerConnectionResponse> {
+  const res = await apiFetch("/api/v1/broker/auth/callback", {
+    method: "POST",
+    body: JSON.stringify({ code, state }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to complete broker authentication");
+  }
+  return res.json();
+}
+
+export async function disconnectBroker(environment: string = "LIVE"): Promise<BrokerConnectionResponse> {
+  const res = await apiFetch(`/api/v1/broker/connection/disconnect?environment=${encodeURIComponent(environment)}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to disconnect broker");
+  }
+  return res.json();
+}
+
+export async function refreshBrokerSnapshots(environment: string = "LIVE"): Promise<BrokerSnapshotSummary> {
+  const res = await apiFetch(`/api/v1/broker/snapshots/refresh?environment=${encodeURIComponent(environment)}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to refresh broker snapshots");
+  }
+  return res.json();
+}
+
+export async function fetchLatestBrokerSnapshot(environment: string = "LIVE"): Promise<BrokerSnapshotDetail> {
+  const res = await apiFetch(`/api/v1/broker/snapshots/latest?environment=${encodeURIComponent(environment)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch latest broker snapshot");
+  }
+  return res.json();
+}
+
+export async function fetchBrokerReadiness(environment: string = "LIVE"): Promise<BrokerReadinessResponse> {
+  const res = await apiFetch(`/api/v1/broker/readiness?environment=${encodeURIComponent(environment)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch broker readiness");
+  }
+  return res.json();
+}

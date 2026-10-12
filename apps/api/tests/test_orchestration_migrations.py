@@ -69,8 +69,11 @@ def migrated(migrated_database):
     # Tests may commit, or exercise downgrade. Reset only this isolated schema's
     # rows in child-first order; do not run ORM guards during fixture cleanup.
     with engine.begin() as conn:
+        inspector = sa.inspect(conn)
+        existing_tables = set(inspector.get_table_names())
         for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
+            if table.name in existing_tables:
+                conn.execute(table.delete())
 
 
 @pytest.fixture
@@ -85,7 +88,7 @@ def populated(migrated):
 
 def test_sole_head_and_revision_length():
     graph = ScriptDirectory.from_config(migration_config("sqlite:///:memory:"))
-    assert graph.get_heads() == [HEAD]
+    assert graph.get_heads() == ["0009_broker_readiness"]
     assert graph.get_revision(HEAD).down_revision == PREVIOUS
     assert len(HEAD) <= 32
 

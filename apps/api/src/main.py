@@ -6,7 +6,7 @@ from src.database import verify_database_connection
 from src.middleware.observability import ObservabilityMiddleware
 from src.middleware.session_touch import SessionTouchMiddleware
 from src.services.sandbox_gate_service import SandboxGateService
-from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper, sandbox, orchestration, market_data
+from src.routes import health, auth, admin, strategies, indicators, rules, multi_series, replays, data_quality, paper, sandbox, orchestration, market_data, broker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,6 +54,7 @@ app.include_router(paper.router)
 app.include_router(sandbox.router)
 app.include_router(orchestration.router)
 app.include_router(market_data.router)
+app.include_router(broker.router)
 
 @app.get("/")
 def read_root():

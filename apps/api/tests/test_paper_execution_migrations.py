@@ -51,8 +51,11 @@ def clean_migrated(migrated_database):
     engine, config = migrated_database
     yield engine, config
     with engine.begin() as conn:
+        inspector = sa.inspect(conn)
+        existing_tables = set(inspector.get_table_names())
         for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
+            if table.name in existing_tables:
+                conn.execute(table.delete())
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
