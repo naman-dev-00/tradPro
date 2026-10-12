@@ -615,3 +615,90 @@ class EvaluationHistoryResponse(BaseModel):
     limit: int
     offset: int
     evaluations: List[RuntimeEvaluationSummaryResponse]
+
+
+# --- Phase 7A: Broker Connection & Readiness Schemas ---
+
+class BrokerAuthorizeUrlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    environment: str = Field("LIVE", pattern="^(LIVE|SANDBOX)$")
+    redirect_uri: Optional[str] = Field(None, max_length=512)
+
+
+class BrokerAuthorizeUrlResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authorization_url: str
+    state: str
+    environment: str = "LIVE"
+    expires_in_seconds: int = 300
+
+
+class BrokerOAuthCallbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(..., min_length=1, max_length=512)
+    state: str = Field(..., min_length=16, max_length=128)
+
+
+class BrokerConnectionStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str
+    environment: str
+    status: str
+    broker_user_id_masked: Optional[str] = None
+    account_name: Optional[str] = None
+    token_valid: bool
+    token_expires_at: Optional[datetime.datetime] = None
+    last_successful_refresh_at: Optional[datetime.datetime] = None
+    version: int
+    credential_generation: int = 1
+
+
+class BrokerSnapshotRefreshResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    snapshot_id: str
+    broker_user_id_masked: str
+    environment: str
+    acquired_at_utc: datetime.datetime
+    freshness_seconds: int
+    raw_fingerprint: str
+    available_margin: Optional[str] = None
+    used_margin: Optional[str] = None
+    positions_count: int
+    holdings_count: int
+    orders_count: int
+    credential_generation: int = 1
+
+
+class BrokerSnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    broker_user_id_masked: str
+    environment: str
+    status: str
+    acquired_at_utc: datetime.datetime
+    freshness_seconds: int
+    raw_fingerprint: str
+    funds_and_margins: Optional[Dict[str, Any]] = None
+    holdings: Optional[List[Dict[str, Any]]] = None
+    positions: Optional[List[Dict[str, Any]]] = None
+    orders: Optional[List[Dict[str, Any]]] = None
+    credential_generation: int = 1
+
+
+class BrokerReadinessGate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    gate_name: str
+    status: Literal["READY", "BLOCKED", "UNKNOWN"]
+    details: str
+    actionable_remedy: Optional[str] = None
+
+
+class BrokerReadinessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    overall_status: Literal["READY_FOR_MONITORING", "BLOCKED", "NOT_CONFIGURED"]
+    live_dispatch_enabled: bool = False
+    environment: str
+    broker_user_id_masked: Optional[str] = None
+    evaluated_at: datetime.datetime
+    gates: List[BrokerReadinessGate]
+    actionable_blockers: List[str]

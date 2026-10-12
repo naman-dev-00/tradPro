@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    pool: "threads",
     fileParallelism: false,
     maxConcurrency: 1,
     include: ["tests/**/*.test.{ts,tsx}"],

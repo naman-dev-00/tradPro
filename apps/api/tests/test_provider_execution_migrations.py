@@ -50,8 +50,11 @@ def clean_migrated(migrated_database):
     engine, config = migrated_database
     yield engine, config
     with engine.begin() as conn:
+        inspector = sa.inspect(conn)
+        existing_tables = set(inspector.get_table_names())
         for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
+            if table.name in existing_tables:
+                conn.execute(table.delete())
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
@@ -63,7 +66,7 @@ def migration_target(request, tmp_path_factory):
 
 def test_0008_revision_graph():
     graph = ScriptDirectory.from_config(migration_config("sqlite:///:memory:"))
-    assert graph.get_heads() == [HEAD]
+    assert graph.get_heads() == ["0009_broker_readiness"]
     rev = graph.get_revision(HEAD)
     assert rev.down_revision == PREVIOUS
     assert len(HEAD) <= 32
